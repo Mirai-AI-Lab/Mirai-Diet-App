@@ -10,7 +10,7 @@
 
 const SHEET_ID = "1qBeXxm7RB92YuimEN4gfWeRo3IDalTI7ZfqwNC090bg";
 const DRIVE_FOLDER_ID = "1WySdeyLYUyyg27S335cOw22qFyeBV3Le";
-const GAS_VERSION = "20260523-4";
+const GAS_VERSION = "20260523-5";
 
 function getGeminiApiKey() {
   return PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
@@ -46,6 +46,7 @@ function callGeminiText_(prompt, modelName) {
     });
   } catch (err) {
     if (isUrlFetchQuotaError_(err)) {
+      markUrlFetchQuotaHit_();
       return { ok: false, error: "urlfetch_quota", quotaExceeded: true };
     }
     return { ok: false, error: String(err.message || err) };
@@ -323,51 +324,102 @@ function buildOfflineAdvice_(records) {
   return parts.join("");
 }
 
+function isForceOfflineAI_() {
+  return PropertiesService.getScriptProperties().getProperty("AI_FORCE_OFFLINE") === "1";
+}
+
+function markUrlFetchQuotaHit_() {
+  var t = new Date();
+  t.setDate(t.getDate() + 1);
+  t.setHours(0, 0, 0, 0);
+  PropertiesService.getScriptProperties().setProperty("AI_OFFLINE_UNTIL", String(t.getTime()));
+}
+
+function isUrlFetchQuotaCached_() {
+  var until = PropertiesService.getScriptProperties().getProperty("AI_OFFLINE_UNTIL");
+  if (!until) return false;
+  return new Date().getTime() < Number(until);
+}
+
+function offlineAdviceResponse_(records) {
+  return {
+    status: "success",
+    advice: buildOfflineAdvice_(records),
+    gasVersion: GAS_VERSION,
+    mode: "offline"
+  };
+}
+
+/**
+ * お披露目用: Geminiを使わず記録からコメント生成（通信不要）
+ * Apps Script → enableOfflineAIForDemo → 実行 → 再デプロイ
+ */
+function enableOfflineAIForDemo() {
+  PropertiesService.getScriptProperties().setProperty("AI_FORCE_OFFLINE", "1");
+  Logger.log("お披露目モードON: AI分析ボタンは記録データからコメントを出します。");
+  return { status: "success", mode: "offline" };
+}
+
+/** 通常モードに戻す（Gemini再開・明日以降） */
+function disableOfflineAIForDemo() {
+  PropertiesService.getScriptProperties().deleteProperty("AI_FORCE_OFFLINE");
+  PropertiesService.getScriptProperties().deleteProperty("AI_OFFLINE_UNTIL");
+  Logger.log("通常モードに戻しました。");
+  return { status: "success" };
+}
+
 function getAIAdvice(data) {
   data = data || {};
 
-  if (!getGeminiApiKey()) {
+  try {
+    var records = getRecentRecordsForUser_(data.lineId, 30);
+    if (records.length === 0) {
+      records = getRecentRecordsForUser_(null, 30);
+    }
+    if (records.length === 0) {
+      return {
+        status: "error",
+        advice: "分析する記録がありません。先に seedDemoData を実行するか、記録を追加してください。",
+        gasVersion: GAS_VERSION
+      };
+    }
+
+    if (isForceOfflineAI_() || isUrlFetchQuotaCached_()) {
+      return offlineAdviceResponse_(records);
+    }
+
+    if (!getGeminiApiKey()) {
+      return offlineAdviceResponse_(records);
+    }
+
+    var context = buildAdviceContext_(records);
+    var prompt = "あなたはダイエットと健康管理の専門家AIです。\n"
+      + "以下の健康記録を分析し、具体的で実践的なアドバイスを提供してください。\n\n"
+      + context + "\n"
+      + "親しみやすく励ます口調で、400文字以内でまとめてください。";
+
+    var result = callGeminiWithFallback_(prompt);
+    if (result.ok) {
+      return { status: "success", advice: result.text, gasVersion: GAS_VERSION };
+    }
+    if (result.quotaExceeded) {
+      markUrlFetchQuotaHit_();
+    }
+
+    console.error("Gemini API エラー → オフラインに切替:", result.error);
+    return offlineAdviceResponse_(records);
+  } catch (err) {
+    console.error("getAIAdvice エラー:", err);
+    var fallbackRecords = getRecentRecordsForUser_(null, 30);
+    if (fallbackRecords.length > 0) {
+      return offlineAdviceResponse_(fallbackRecords);
+    }
     return {
       status: "error",
-      advice: "AI分析の準備中です。GASのスクリプトプロパティに GEMINI_API_KEY を設定してください。",
+      advice: "サーバーエラー（" + GAS_VERSION + "）: " + err.message,
       gasVersion: GAS_VERSION
     };
   }
-
-  var records = getRecentRecordsForUser_(data.lineId, 30);
-  if (records.length === 0) {
-    return {
-      status: "error",
-      advice: "分析する記録がありません。先に体重や食事を記録してください。",
-      gasVersion: GAS_VERSION
-    };
-  }
-
-  var context = buildAdviceContext_(records);
-  var prompt = "あなたはダイエットと健康管理の専門家AIです。\n"
-    + "以下の健康記録を分析し、具体的で実践的なアドバイスを提供してください。\n\n"
-    + context + "\n"
-    + "親しみやすく励ます口調で、400文字以内でまとめてください。";
-
-  var result = callGeminiWithFallback_(prompt);
-  if (result.ok) {
-    return { status: "success", advice: result.text, gasVersion: GAS_VERSION };
-  }
-  if (result.quotaExceeded) {
-    return {
-      status: "success",
-      advice: buildOfflineAdvice_(records),
-      gasVersion: GAS_VERSION,
-      mode: "offline"
-    };
-  }
-
-  console.error("Gemini API エラー:", result.error);
-  return {
-    status: "error",
-    advice: "AI分析エラー（" + GAS_VERSION + "）: " + result.error,
-    gasVersion: GAS_VERSION
-  };
 }
 
 /** Apps Script で AI分析の通しテスト: testGetAIAdvice を実行 */
@@ -544,6 +596,7 @@ function seedDemoData() {
   }
 
   Logger.log("デモデータ投入完了: " + count + "件（ユーザー: " + user.name + "）");
+  enableOfflineAIForDemo();
   return { status: "success", count: count, user: user };
 }
 
