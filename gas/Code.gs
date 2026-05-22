@@ -206,3 +206,201 @@ function getAIAdvice(data) {
     return { advice: "AI分析に一時的な問題が発生しました。しばらく経ってから再試行してください。" };
   }
 }
+
+// =========================================
+// デモ用サンプルデータ（お披露目 → 後で削除）
+// Apps Script エディタで seedDemoData() を実行
+// =========================================
+
+var DEMO_TAG = "【デモ】";
+
+function ensureRecordSheet_() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sheet = ss.getSheetByName("記録");
+  if (!sheet) {
+    sheet = ss.insertSheet("記録");
+    sheet.appendRow([
+      "date", "lineId", "userName", "recordType", "subType",
+      "weight", "bodyFat", "muscleMass", "visceralFat",
+      "duration", "distance", "memo", "imageUrls", "createdAt"
+    ]);
+  }
+  return sheet;
+}
+
+function getSeedTargetUser_() {
+  // 特定ユーザーのみ入れたいときは lineId を指定（空なら「ユーザー」シート先頭）
+  var overrideLineId = "";
+  var overrideName = "デモユーザー";
+
+  if (overrideLineId) {
+    return { lineId: overrideLineId, name: overrideName };
+  }
+
+  var users = getUsers().result || [];
+  if (users.length === 0) {
+    throw new Error("ユーザーが未登録です。先にスマホからアプリを1回開いてください。");
+  }
+  return { lineId: users[0].lineId, name: users[0].name };
+}
+
+function formatDateYmd_(date) {
+  return Utilities.formatDate(date, "Asia/Tokyo", "yyyy-MM-dd");
+}
+
+function appendDemoRow_(sheet, row) {
+  sheet.appendRow([
+    row.date,
+    row.lineId,
+    row.userName,
+    row.recordType,
+    row.subType || "",
+    row.weight !== undefined && row.weight !== null ? row.weight : "",
+    row.bodyFat !== undefined && row.bodyFat !== null ? row.bodyFat : "",
+    row.muscleMass !== undefined && row.muscleMass !== null ? row.muscleMass : "",
+    row.visceralFat !== undefined && row.visceralFat !== null ? row.visceralFat : "",
+    row.duration !== undefined && row.duration !== null ? row.duration : "",
+    row.distance !== undefined && row.distance !== null ? row.distance : "",
+    DEMO_TAG + (row.memo || ""),
+    "",
+    new Date().toISOString()
+  ]);
+}
+
+/**
+ * お披露目用のダミーデータを約3週間分投入（体重は58kg前後）
+ * 実行: Apps Script → 関数 seedDemoData → 実行
+ */
+function seedDemoData() {
+  var user = getSeedTargetUser_();
+  var sheet = ensureRecordSheet_();
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  var weights = [
+    59.2, 59.0, 58.8, 58.9, 58.7,
+    58.6, 58.5, 58.4, 58.6, 58.3,
+    58.2, 58.1, 58.0, 58.2, 57.9,
+    58.1, 58.0, 58.3, 58.2, 58.1, 58.0
+  ];
+
+  var count = 0;
+
+  for (var i = weights.length - 1; i >= 0; i--) {
+    var d = new Date(today);
+    d.setDate(d.getDate() - (weights.length - 1 - i));
+    var dateStr = formatDateYmd_(d);
+    var w = weights[i];
+    var bodyFat = Math.round((25.8 - (weights.length - 1 - i) * 0.04) * 10) / 10;
+    var muscle = Math.round((37.8 + (weights.length - 1 - i) * 0.015) * 10) / 10;
+    var visceral = i % 3 === 0 ? 8 : (i % 3 === 1 ? 7.5 : 8.5);
+
+    appendDemoRow_(sheet, {
+      date: dateStr,
+      lineId: user.lineId,
+      userName: user.name,
+      recordType: "体重",
+      subType: "朝計測",
+      weight: w,
+      bodyFat: bodyFat,
+      muscleMass: muscle,
+      visceralFat: visceral,
+      memo: "朝の計測（サンプル）"
+    });
+    count++;
+
+    appendDemoRow_(sheet, {
+      date: dateStr,
+      lineId: user.lineId,
+      userName: user.name,
+      recordType: "お通じ",
+      subType: i % 5 === 0 ? "なし" : "あり",
+      memo: ""
+    });
+    count++;
+
+    if (i % 2 === 0) {
+      appendDemoRow_(sheet, {
+        date: dateStr,
+        lineId: user.lineId,
+        userName: user.name,
+        recordType: "食事",
+        subType: "朝食",
+        memo: "プロテイン、バナナ"
+      });
+      count++;
+    }
+    if (i % 3 === 0) {
+      appendDemoRow_(sheet, {
+        date: dateStr,
+        lineId: user.lineId,
+        userName: user.name,
+        recordType: "食事",
+        subType: "昼食",
+        memo: "サラダチキン、野菜スープ"
+      });
+      count++;
+    }
+    if (i % 4 === 1) {
+      appendDemoRow_(sheet, {
+        date: dateStr,
+        lineId: user.lineId,
+        userName: user.name,
+        recordType: "食事",
+        subType: "夕食",
+        memo: "焼き魚、味噌汁、小盛りごはん"
+      });
+      count++;
+    }
+    if (i % 3 === 1) {
+      appendDemoRow_(sheet, {
+        date: dateStr,
+        lineId: user.lineId,
+        userName: user.name,
+        recordType: "運動",
+        subType: i % 6 === 1 ? "ジム（筋トレ）" : "ウォーキング",
+        duration: i % 6 === 1 ? 60 : 40,
+        distance: i % 6 === 1 ? "" : 3.2,
+        memo: i % 6 === 1 ? "スクワット、腹筋" : "近所を歩く"
+      });
+      count++;
+    }
+  }
+
+  Logger.log("デモデータ投入完了: " + count + "件（ユーザー: " + user.name + "）");
+  return { status: "success", count: count, user: user };
+}
+
+/**
+ * 【デモ】タグ付きの行だけ削除（本番データは残る想定）
+ * 実行: Apps Script → 関数 clearDemoData → 実行
+ */
+function clearDemoData() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sheet = ss.getSheetByName("記録");
+  if (!sheet || sheet.getLastRow() <= 1) {
+    Logger.log("削除対象なし");
+    return { status: "success", deleted: 0 };
+  }
+
+  var values = sheet.getDataRange().getValues();
+  var kept = [values[0]];
+  var deleted = 0;
+
+  for (var i = 1; i < values.length; i++) {
+    var memo = String(values[i][11] || "");
+    if (memo.indexOf(DEMO_TAG) === 0) {
+      deleted++;
+    } else {
+      kept.push(values[i]);
+    }
+  }
+
+  sheet.clearContents();
+  if (kept.length > 0) {
+    sheet.getRange(1, 1, kept.length, kept[0].length).setValues(kept);
+  }
+
+  Logger.log("デモデータ削除完了: " + deleted + "件");
+  return { status: "success", deleted: deleted };
+}
