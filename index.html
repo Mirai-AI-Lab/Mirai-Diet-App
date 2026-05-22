@@ -550,7 +550,12 @@
       method: "POST",
       body: JSON.stringify({ action, data })
     });
-    return await res.json();
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      throw new Error("GAS応答エラー（" + res.status + "）");
+    }
   }
 
   // =========================================
@@ -1043,19 +1048,14 @@
     result.style.display  = 'none';
 
     try {
-      const recentRecords = [...allData]
-        .sort((a, b) => new Date(b.date) - new Date(a.date))
-        .slice(0, 30);
-
       const res = await callGas("getAIAdvice", {
-        lineId: currentUserId,
-        recentRecords
+        lineId: currentUserId
       });
 
-      result.innerText     = res.advice || "アドバイスを取得できませんでした。";
+      result.innerText = res.advice || res.message || "アドバイスを取得できませんでした。";
       result.style.display = 'block';
     } catch (e) {
-      result.innerText     = "AI分析に失敗しました。しばらく経ってから再試行してください。";
+      result.innerText = "通信エラー: " + e.message + "\nGASを再デプロイしてから再試行してください。";
       result.style.display = 'block';
     } finally {
       btn.disabled          = false;

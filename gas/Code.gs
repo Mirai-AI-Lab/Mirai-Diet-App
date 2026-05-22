@@ -10,21 +10,24 @@
 
 const SHEET_ID = "1qBeXxm7RB92YuimEN4gfWeRo3IDalTI7ZfqwNC090bg";
 const DRIVE_FOLDER_ID = "1WySdeyLYUyyg27S335cOw22qFyeBV3Le";
+const GAS_VERSION = "20260522-3";
 
 function getGeminiApiKey() {
   return PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
 }
 
 var GEMINI_MODEL = "gemini-2.5-flash";
+var GEMINI_FALLBACK_MODEL = "gemini-2.0-flash";
 
-function callGeminiText_(prompt) {
+function callGeminiText_(prompt, modelName) {
   var apiKey = getGeminiApiKey();
   if (!apiKey) {
     return { ok: false, error: "GEMINI_API_KEY が未設定です" };
   }
 
+  var model = modelName || GEMINI_MODEL;
   var url = "https://generativelanguage.googleapis.com/v1beta/models/"
-    + GEMINI_MODEL + ":generateContent?key=" + apiKey;
+    + model + ":generateContent?key=" + apiKey;
 
   var response = UrlFetchApp.fetch(url, {
     method: "post",
@@ -39,8 +42,13 @@ function callGeminiText_(prompt) {
   var body = response.getContentText();
 
   if (status !== 200) {
-    console.error("Gemini API HTTP " + status + ": " + body);
-    return { ok: false, error: "HTTP " + status };
+    var detail = body;
+    try {
+      var errJson = JSON.parse(body);
+      if (errJson.error && errJson.error.message) detail = errJson.error.message;
+    } catch (ignore) {}
+    console.error("Gemini API HTTP " + status + " (" + model + "): " + body);
+    return { ok: false, error: "HTTP " + status + ": " + detail, model: model };
   }
 
   var json = JSON.parse(body);
@@ -49,18 +57,27 @@ function callGeminiText_(prompt) {
     && json.candidates[0].content.parts[0].text;
 
   if (!text) {
-    console.error("Gemini API 空レスポンス: " + body);
-    return { ok: false, error: "empty_response" };
+    console.error("Gemini API 空レスポンス (" + model + "): " + body);
+    return { ok: false, error: "empty_response", model: model };
   }
 
-  return { ok: true, text: text };
+  return { ok: true, text: text, model: model };
+}
+
+function callGeminiWithFallback_(prompt) {
+  var result = callGeminiText_(prompt, GEMINI_MODEL);
+  if (result.ok) return result;
+  if (GEMINI_FALLBACK_MODEL && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
+    return callGeminiText_(prompt, GEMINI_FALLBACK_MODEL);
+  }
+  return result;
 }
 
 /** Apps Script で接続テスト: testGeminiConnection を実行 */
 function testGeminiConnection() {
-  var result = callGeminiText_("こんにちは。1文だけ返してください。");
+  var result = callGeminiWithFallback_("こんにちは。1文だけ返してください。");
   if (result.ok) {
-    Logger.log("OK: " + result.text);
+    Logger.log("OK (" + result.model + "): " + result.text);
     return result;
   }
   Logger.log("NG: " + result.error);
@@ -68,32 +85,50 @@ function testGeminiConnection() {
 }
 
 function doPost(e) {
-  const body = JSON.parse(e.postData.contents);
-  const { action, data } = body;
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      return jsonOutput_({ status: "error", advice: "リクエストが空です", gasVersion: GAS_VERSION });
+    }
 
-  let result;
-  switch (action) {
-    case "register":
-      result = registerUser(data);
-      break;
-    case "getUsers":
-      result = getUsers();
-      break;
-    case "uploadRecord":
-      result = uploadRecord(data);
-      break;
-    case "getRecords":
-      result = getRecords();
-      break;
-    case "getAIAdvice":
-      result = getAIAdvice(data);
-      break;
-    default:
-      result = { status: "error", message: "Unknown action" };
+    const body = JSON.parse(e.postData.contents);
+    const { action, data } = body;
+
+    let result;
+    switch (action) {
+      case "register":
+        result = registerUser(data);
+        break;
+      case "getUsers":
+        result = getUsers();
+        break;
+      case "uploadRecord":
+        result = uploadRecord(data);
+        break;
+      case "getRecords":
+        result = getRecords();
+        break;
+      case "getAIAdvice":
+        result = getAIAdvice(data || {});
+        break;
+      default:
+        result = { status: "error", message: "Unknown action" };
+    }
+
+    if (result && !result.gasVersion) result.gasVersion = GAS_VERSION;
+    return jsonOutput_(result);
+  } catch (err) {
+    console.error("doPost エラー:", err);
+    return jsonOutput_({
+      status: "error",
+      advice: "サーバーエラー: " + err.message,
+      gasVersion: GAS_VERSION
+    });
   }
+}
 
+function jsonOutput_(obj) {
   return ContentService
-    .createTextOutput(JSON.stringify(result))
+    .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -204,25 +239,26 @@ function getRecords() {
   return { result: result };
 }
 
-function getAIAdvice(data) {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) {
-    return {
-      advice: "AI分析の準備中です。GASのスクリプトプロパティに GEMINI_API_KEY を設定してください。"
-    };
-  }
+function getRecentRecordsForUser_(lineId, limit) {
+  var all = getRecords().result || [];
+  var filtered = lineId
+    ? all.filter(function (r) { return r.lineId === lineId; })
+    : all;
+  filtered.sort(function (a, b) { return new Date(b.date) - new Date(a.date); });
+  return filtered.slice(0, limit || 30);
+}
 
-  const records = data.recentRecords || [];
-  let context = "以下は直近の健康記録データです:\n\n";
+function buildAdviceContext_(records) {
+  var context = "以下は直近の健康記録データです:\n\n";
   records.forEach(function (r) {
     if (r.recordType === "体重") {
-      const w = r.extraData && r.extraData.weight ? "体重 " + r.extraData.weight + "kg" : "";
-      const bf = r.extraData && r.extraData.bodyFat ? "体脂肪率 " + r.extraData.bodyFat + "%" : "";
-      const mm = r.extraData && r.extraData.muscleMass ? "筋肉量 " + r.extraData.muscleMass + "kg" : "";
+      var w = r.extraData && r.extraData.weight ? "体重 " + r.extraData.weight + "kg" : "";
+      var bf = r.extraData && r.extraData.bodyFat ? "体脂肪率 " + r.extraData.bodyFat + "%" : "";
+      var mm = r.extraData && r.extraData.muscleMass ? "筋肉量 " + r.extraData.muscleMass + "kg" : "";
       context += "[" + r.date + "] 体重測定: " + [w, bf, mm].filter(Boolean).join(", ") + "\n";
     } else if (r.recordType === "運動") {
-      const dur = r.extraData && r.extraData.duration ? r.extraData.duration + "分" : "";
-      const dist = r.extraData && r.extraData.distance ? r.extraData.distance + "km" : "";
+      var dur = r.extraData && r.extraData.duration ? r.extraData.duration + "分" : "";
+      var dist = r.extraData && r.extraData.distance ? r.extraData.distance + "km" : "";
       context += "[" + r.date + "] 運動: " + r.subType + " " + [dur, dist].filter(Boolean).join(" ") + "\n";
     } else if (r.recordType === "食事") {
       context += "[" + r.date + "] 食事(" + r.subType + "): " + (r.memo || "写真のみ") + "\n";
@@ -230,19 +266,59 @@ function getAIAdvice(data) {
       context += "[" + r.date + "] お通じ: " + r.subType + "\n";
     }
   });
+  return context;
+}
 
-  const prompt = "あなたはダイエットと健康管理の専門家AIです。\n"
+function getAIAdvice(data) {
+  data = data || {};
+
+  if (!getGeminiApiKey()) {
+    return {
+      status: "error",
+      advice: "AI分析の準備中です。GASのスクリプトプロパティに GEMINI_API_KEY を設定してください。",
+      gasVersion: GAS_VERSION
+    };
+  }
+
+  var records = getRecentRecordsForUser_(data.lineId, 30);
+  if (records.length === 0) {
+    return {
+      status: "error",
+      advice: "分析する記録がありません。先に体重や食事を記録してください。",
+      gasVersion: GAS_VERSION
+    };
+  }
+
+  var context = buildAdviceContext_(records);
+  var prompt = "あなたはダイエットと健康管理の専門家AIです。\n"
     + "以下の健康記録を分析し、具体的で実践的なアドバイスを提供してください。\n\n"
     + context + "\n"
     + "親しみやすく励ます口調で、400文字以内でまとめてください。";
 
-  var result = callGeminiText_(prompt);
+  var result = callGeminiWithFallback_(prompt);
   if (result.ok) {
-    return { advice: result.text };
+    return { status: "success", advice: result.text, gasVersion: GAS_VERSION };
   }
 
   console.error("Gemini API エラー:", result.error);
-  return { advice: "AI分析に一時的な問題が発生しました。GASの Code.gs を最新版に更新し、testGeminiConnection を実行して確認してください。" };
+  return {
+    status: "error",
+    advice: "AI分析エラー（" + GAS_VERSION + "）: " + result.error,
+    gasVersion: GAS_VERSION
+  };
+}
+
+/** Apps Script で AI分析の通しテスト: testGetAIAdvice を実行 */
+function testGetAIAdvice() {
+  var users = getUsers().result || [];
+  if (users.length === 0) {
+    Logger.log("ユーザー未登録。先にアプリを1回開いてください。");
+    return;
+  }
+  var res = getAIAdvice({ lineId: users[0].lineId });
+  Logger.log(res.status + " / " + res.gasVersion);
+  Logger.log(res.advice);
+  return res;
 }
 
 // =========================================
