@@ -1038,24 +1038,82 @@
   // =========================================
   // 12. AI アドバイス
   // =========================================
+  function buildOfflineAdviceClient(data) {
+    let records = data || [];
+    if (currentUserId) {
+      const mine = records.filter(d => d.lineId === currentUserId);
+      if (mine.length > 0) records = mine;
+    }
+
+    const weights = records
+      .filter(d => d.recordType === '体重')
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+    const latest = weights.length ? weights[weights.length - 1] : null;
+    const first  = weights.length ? weights[0] : null;
+    const exerciseCount = records.filter(d => d.recordType === '運動').length;
+    const bowelData = records.filter(d => d.recordType === 'お通じ');
+    const bowelOk   = bowelData.filter(d => d.subType === 'あり').length;
+    const bowelRate = bowelData.length ? Math.round((bowelOk / bowelData.length) * 100) : null;
+
+    const w  = latest?.extraData?.weight ?? null;
+    const bf = latest?.extraData?.bodyFat ?? null;
+    let diff = null;
+    if (first?.extraData?.weight != null && latest?.extraData?.weight != null) {
+      diff = Math.round((latest.extraData.weight - first.extraData.weight) * 10) / 10;
+    }
+
+    const parts = [];
+    parts.push('毎朝ちゃんと記録が続いていますね。続けられている時点で、もう十分前に進んでいます。');
+    if (w != null) {
+      parts.push(`いまの体重は${w}kg。`);
+      if (bf != null) parts.push(`体脂肪率は${bf}%。`);
+    }
+    if (diff != null && diff < 0) {
+      parts.push(`記録を始めてから${Math.abs(diff)}kg、ゆっくり動いています。焦らなくて大丈夫。`);
+    } else if (diff != null && diff > 0) {
+      parts.push('数字は上下します。記録を続けていることが、いちばん大事なんです。');
+    }
+    if (exerciseCount > 0) parts.push(`運動も${exerciseCount}回。動けている日がありますね。`);
+    if (bowelRate != null) parts.push(`お通じ率は${bowelRate}%。`);
+    parts.push('今週は「夕食を写真に残す」だけ、3日試してみませんか。一緒に続けていきましょう。');
+    return parts.join('');
+  }
+
+  function shouldUseClientAdvice_(res) {
+    if (!res || !res.advice) return true;
+    if (!res.gasVersion) return true;
+    if (res.status === 'error') return true;
+    if (res.advice.indexOf('一時的な問題') !== -1) return true;
+    if (res.advice.indexOf('AI分析の準備中') !== -1) return true;
+    return false;
+  }
+
   async function getAIAdvice() {
     const btn     = document.getElementById('aiAdviceBtn');
     const loading = document.getElementById('aiLoading');
     const result  = document.getElementById('aiResult');
 
-    btn.disabled         = true;
+    btn.disabled          = true;
     loading.style.display = 'block';
     result.style.display  = 'none';
 
-    try {
-      const res = await callGas("getAIAdvice", {
-        lineId: currentUserId
-      });
+    if (!allData.length) await fetchAllData('summary');
 
-      result.innerText = res.advice || res.message || "アドバイスを取得できませんでした。";
+    try {
+      const res = await callGas("getAIAdvice", { lineId: currentUserId });
+
+      if (shouldUseClientAdvice_(res) && allData.length > 0) {
+        result.innerText = buildOfflineAdviceClient(allData);
+      } else {
+        result.innerText = res.advice || res.message || "アドバイスを取得できませんでした。";
+      }
       result.style.display = 'block';
     } catch (e) {
-      result.innerText = "通信エラー: " + e.message + "\nGASを再デプロイしてから再試行してください。";
+      if (allData.length > 0) {
+        result.innerText = buildOfflineAdviceClient(allData);
+      } else {
+        result.innerText = "通信エラー: " + e.message;
+      }
       result.style.display = 'block';
     } finally {
       btn.disabled          = false;
