@@ -15,6 +15,58 @@ function getGeminiApiKey() {
   return PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
 }
 
+var GEMINI_MODEL = "gemini-2.5-flash";
+
+function callGeminiText_(prompt) {
+  var apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return { ok: false, error: "GEMINI_API_KEY が未設定です" };
+  }
+
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/"
+    + GEMINI_MODEL + ":generateContent?key=" + apiKey;
+
+  var response = UrlFetchApp.fetch(url, {
+    method: "post",
+    contentType: "application/json",
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }]
+    })
+  });
+
+  var status = response.getResponseCode();
+  var body = response.getContentText();
+
+  if (status !== 200) {
+    console.error("Gemini API HTTP " + status + ": " + body);
+    return { ok: false, error: "HTTP " + status };
+  }
+
+  var json = JSON.parse(body);
+  var text = json.candidates && json.candidates[0] && json.candidates[0].content
+    && json.candidates[0].content.parts && json.candidates[0].content.parts[0]
+    && json.candidates[0].content.parts[0].text;
+
+  if (!text) {
+    console.error("Gemini API 空レスポンス: " + body);
+    return { ok: false, error: "empty_response" };
+  }
+
+  return { ok: true, text: text };
+}
+
+/** Apps Script で接続テスト: testGeminiConnection を実行 */
+function testGeminiConnection() {
+  var result = callGeminiText_("こんにちは。1文だけ返してください。");
+  if (result.ok) {
+    Logger.log("OK: " + result.text);
+    return result;
+  }
+  Logger.log("NG: " + result.error);
+  return result;
+}
+
 function doPost(e) {
   const body = JSON.parse(e.postData.contents);
   const { action, data } = body;
@@ -184,27 +236,13 @@ function getAIAdvice(data) {
     + context + "\n"
     + "親しみやすく励ます口調で、400文字以内でまとめてください。";
 
-  try {
-    const response = UrlFetchApp.fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey,
-      {
-        method: "post",
-        contentType: "application/json",
-        payload: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }]
-        })
-      }
-    );
-    const json = JSON.parse(response.getContentText());
-    const advice = (json.candidates && json.candidates[0] && json.candidates[0].content
-      && json.candidates[0].content.parts && json.candidates[0].content.parts[0]
-      && json.candidates[0].content.parts[0].text)
-      || "アドバイスを生成できませんでした。";
-    return { advice: advice };
-  } catch (err) {
-    console.error("Gemini API エラー:", err);
-    return { advice: "AI分析に一時的な問題が発生しました。しばらく経ってから再試行してください。" };
+  var result = callGeminiText_(prompt);
+  if (result.ok) {
+    return { advice: result.text };
   }
+
+  console.error("Gemini API エラー:", result.error);
+  return { advice: "AI分析に一時的な問題が発生しました。GASの Code.gs を最新版に更新し、testGeminiConnection を実行して確認してください。" };
 }
 
 // =========================================
