@@ -10,7 +10,7 @@
 
 const SHEET_ID = "1qBeXxm7RB92YuimEN4gfWeRo3IDalTI7ZfqwNC090bg";
 const DRIVE_FOLDER_ID = "1WySdeyLYUyyg27S335cOw22qFyeBV3Le";
-const GAS_VERSION = "20260522-3";
+const GAS_VERSION = "20260523-4";
 
 function getGeminiApiKey() {
   return PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
@@ -18,6 +18,11 @@ function getGeminiApiKey() {
 
 var GEMINI_MODEL = "gemini-2.5-flash";
 var GEMINI_FALLBACK_MODEL = "gemini-2.0-flash";
+
+function isUrlFetchQuotaError_(err) {
+  var msg = String(err && err.message ? err.message : err);
+  return msg.indexOf("too many times") !== -1 || msg.indexOf("urlfetch") !== -1;
+}
 
 function callGeminiText_(prompt, modelName) {
   var apiKey = getGeminiApiKey();
@@ -29,14 +34,22 @@ function callGeminiText_(prompt, modelName) {
   var url = "https://generativelanguage.googleapis.com/v1beta/models/"
     + model + ":generateContent?key=" + apiKey;
 
-  var response = UrlFetchApp.fetch(url, {
-    method: "post",
-    contentType: "application/json",
-    muteHttpExceptions: true,
-    payload: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }]
-    })
-  });
+  var response;
+  try {
+    response = UrlFetchApp.fetch(url, {
+      method: "post",
+      contentType: "application/json",
+      muteHttpExceptions: true,
+      payload: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }]
+      })
+    });
+  } catch (err) {
+    if (isUrlFetchQuotaError_(err)) {
+      return { ok: false, error: "urlfetch_quota", quotaExceeded: true };
+    }
+    return { ok: false, error: String(err.message || err) };
+  }
 
   var status = response.getResponseCode();
   var body = response.getContentText();
@@ -66,18 +79,23 @@ function callGeminiText_(prompt, modelName) {
 
 function callGeminiWithFallback_(prompt) {
   var result = callGeminiText_(prompt, GEMINI_MODEL);
-  if (result.ok) return result;
-  if (GEMINI_FALLBACK_MODEL && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
+  if (result.ok || result.quotaExceeded) return result;
+  if (result.error && result.error.indexOf("HTTP 404") !== -1
+      && GEMINI_FALLBACK_MODEL && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
     return callGeminiText_(prompt, GEMINI_FALLBACK_MODEL);
   }
   return result;
 }
 
-/** Apps Script で接続テスト: testGeminiConnection を実行 */
+/** Apps Script で接続テスト: testGeminiConnection を実行（1日1回程度） */
 function testGeminiConnection() {
-  var result = callGeminiWithFallback_("こんにちは。1文だけ返してください。");
+  var result = callGeminiText_("こんにちは。1文だけ返してください。");
   if (result.ok) {
     Logger.log("OK (" + result.model + "): " + result.text);
+    return result;
+  }
+  if (result.quotaExceeded) {
+    Logger.log("NG: GASの外部通信（urlfetch）が今日の上限に達しています。明日再試行してください。");
     return result;
   }
   Logger.log("NG: " + result.error);
@@ -269,6 +287,42 @@ function buildAdviceContext_(records) {
   return context;
 }
 
+/** Geminiが使えない日（通信上限など）のお披露目用フォールバック */
+function buildOfflineAdvice_(records) {
+  var weights = records.filter(function (r) { return r.recordType === "体重"; });
+  weights.sort(function (a, b) { return new Date(a.date) - new Date(b.date); });
+  var latest = weights.length ? weights[weights.length - 1] : null;
+  var first = weights.length ? weights[0] : null;
+  var exerciseCount = records.filter(function (r) { return r.recordType === "運動"; }).length;
+  var bowelData = records.filter(function (r) { return r.recordType === "お通じ"; });
+  var bowelOk = bowelData.filter(function (r) { return r.subType === "あり"; }).length;
+  var bowelRate = bowelData.length ? Math.round((bowelOk / bowelData.length) * 100) : null;
+
+  var w = latest && latest.extraData ? latest.extraData.weight : null;
+  var bf = latest && latest.extraData ? latest.extraData.bodyFat : null;
+  var diff = null;
+  if (first && latest && first.extraData && latest.extraData
+      && first.extraData.weight != null && latest.extraData.weight != null) {
+    diff = Math.round((latest.extraData.weight - first.extraData.weight) * 10) / 10;
+  }
+
+  var parts = [];
+  parts.push("毎朝ちゃんと記録が続いていますね。続けられている時点で、もう十分前に進んでいます。");
+  if (w != null) {
+    parts.push("いまの体重は" + w + "kg。");
+    if (bf != null) parts.push("体脂肪率は" + bf + "%。");
+  }
+  if (diff != null && diff < 0) {
+    parts.push("記録を始めてから" + Math.abs(diff) + "kg、ゆっくり動いています。焦らなくて大丈夫。");
+  } else if (diff != null && diff > 0) {
+    parts.push("数字は上下します。記録を続けていることが、いちばん大事なんです。");
+  }
+  if (exerciseCount > 0) parts.push("運動も" + exerciseCount + "回。動けている日がありますね。");
+  if (bowelRate != null) parts.push("お通じ率は" + bowelRate + "%。");
+  parts.push("今週は「夕食を写真に残す」だけ、3日試してみませんか。一緒に続けていきましょう。");
+  return parts.join("");
+}
+
 function getAIAdvice(data) {
   data = data || {};
 
@@ -298,6 +352,14 @@ function getAIAdvice(data) {
   var result = callGeminiWithFallback_(prompt);
   if (result.ok) {
     return { status: "success", advice: result.text, gasVersion: GAS_VERSION };
+  }
+  if (result.quotaExceeded) {
+    return {
+      status: "success",
+      advice: buildOfflineAdvice_(records),
+      gasVersion: GAS_VERSION,
+      mode: "offline"
+    };
   }
 
   console.error("Gemini API エラー:", result.error);
