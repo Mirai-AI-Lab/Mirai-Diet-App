@@ -236,6 +236,28 @@
       font-size: 13px; line-height: 1.8; color: #333; white-space: pre-wrap; display: none;
       border-left: 4px solid var(--dark-green);
     }
+
+    /* ===== 食事AI分析 ===== */
+    .meal-ai-section {
+      margin: 12px 0 16px;
+      padding: 14px;
+      background: linear-gradient(135deg, #fff8ee, #e8f8ee);
+      border-radius: 14px;
+      border: 1px solid #e8dcc5;
+    }
+    .meal-ai-title { font-size: 14px; font-weight: bold; color: #c67a17; margin-bottom: 8px; }
+    #mealAiBtn {
+      background: linear-gradient(135deg, #e67e22, #27ae60);
+      color: white; border: none; width: 100%; padding: 12px;
+      border-radius: 10px; font-size: 14px; font-weight: bold; cursor: pointer;
+    }
+    #mealAiBtn:disabled { background: #ccc; }
+    .meal-ai-loading { text-align: center; padding: 12px; color: #888; font-size: 13px; display: none; }
+    .meal-ai-result {
+      margin-top: 10px; padding: 12px; background: white; border-radius: 10px;
+      font-size: 13px; line-height: 1.8; color: #333; white-space: pre-wrap; display: none;
+      border-left: 4px solid #e67e22;
+    }
   </style>
 </head>
 <body>
@@ -273,7 +295,8 @@
       <label>食事タイプ</label>
       <select id="mealType">
         <option>朝食</option><option>昼食</option><option>夕食</option>
-        <option>間食</option><option>プロテイン</option><option>飲み物</option><option>その他</option>
+        <option>間食</option><option>プロテイン</option><option>飲み物</option>
+        <option>残り</option><option>その他</option>
       </select>
       <label>写真（最大3枚）</label>
       <div class="photo-buttons">
@@ -283,6 +306,14 @@
       <input type="file" id="camera"  accept="image/*" capture="environment" style="display:none" onchange="handleFiles(this)">
       <input type="file" id="gallery" accept="image/*" multiple           style="display:none" onchange="handleFiles(this)">
       <div id="previewContainer" class="preview-container"></div>
+
+      <div class="meal-ai-section" id="mealAiSection" style="display:none;">
+        <div class="meal-ai-title">🍽️ 食事AI分析（ChatGPT同型）</div>
+        <button type="button" id="mealAiBtn" onclick="analyzeMealPhoto()">🤖 この食事を分析する</button>
+        <div class="meal-ai-loading" id="mealAiLoading">写真を見ています…</div>
+        <div class="meal-ai-result" id="mealAiResult"></div>
+      </div>
+
       <label>メモ（食材・量など）</label>
       <textarea id="mealMemo" placeholder="例: サラダチキン100g、プロテイン1杯、コーヒーブラック..."></textarea>
     </div>
@@ -492,6 +523,8 @@
   let exerciseChart     = null;
   let currentUserId     = null;
   let currentUserName   = null;
+  let mealAnalyzing     = false;
+  let mealAnalyzeTimer  = null;
 
   // =========================================
   // 1. 起動時処理
@@ -599,6 +632,22 @@
     imageBlobs = [];
     const pc = document.getElementById('previewContainer');
     if (pc) pc.innerHTML = "";
+    clearMealAnalysis();
+  }
+
+  function clearMealAnalysis() {
+    const section = document.getElementById('mealAiSection');
+    const result  = document.getElementById('mealAiResult');
+    const loading = document.getElementById('mealAiLoading');
+    if (section) section.style.display = 'none';
+    if (result) { result.innerText = ''; result.style.display = 'none'; }
+    if (loading) loading.style.display = 'none';
+  }
+
+  function updateMealAiVisibility() {
+    const section = document.getElementById('mealAiSection');
+    if (!section) return;
+    section.style.display = (currentRecordType === 'meal' && imageBlobs.length > 0) ? 'block' : 'none';
   }
 
   function setBowel(status) {
@@ -946,7 +995,15 @@
     Array.from(input.files).forEach(file => {
       if (imageBlobs.length >= 3) return;
       const reader = new FileReader();
-      reader.onload = e => { imageBlobs.push(e.target.result); renderPreviews(); };
+      reader.onload = e => {
+        imageBlobs.push(e.target.result);
+        renderPreviews();
+        updateMealAiVisibility();
+        if (currentRecordType === 'meal') {
+          clearTimeout(mealAnalyzeTimer);
+          mealAnalyzeTimer = setTimeout(analyzeMealPhoto, 600);
+        }
+      };
       reader.readAsDataURL(file);
     });
     input.value = "";
@@ -961,9 +1018,65 @@
       div.innerHTML = `<img src="${blob}" class="preview-img"><div class="del-btn" onclick="removeImg(${i})">×</div>`;
       container.appendChild(div);
     });
+    updateMealAiVisibility();
   }
 
-  function removeImg(i) { imageBlobs.splice(i, 1); renderPreviews(); }
+  function removeImg(i) {
+    imageBlobs.splice(i, 1);
+    renderPreviews();
+    if (imageBlobs.length && currentRecordType === 'meal') {
+      analyzeMealPhoto();
+    } else {
+      clearMealAnalysis();
+    }
+  }
+
+  function buildOfflineMealAdviceClient() {
+    const type = document.getElementById('mealType').value || '食事';
+    return `写真を送ってくれてありがとうございます。${type}の記録、続いていますね。\n\n`
+      + '【食べる順番の目安】\n'
+      + '1. 野菜・サラダ\n'
+      + '2. 味噌汁の具・スープ\n'
+      + '3. タンパク質（魚・肉・豆腐・卵など）\n'
+      + '4. 最後にごはん（小盛りから）';
+  }
+
+  async function analyzeMealPhoto() {
+    if (currentRecordType !== 'meal' || !imageBlobs.length || mealAnalyzing) return;
+
+    const btn     = document.getElementById('mealAiBtn');
+    const loading = document.getElementById('mealAiLoading');
+    const result  = document.getElementById('mealAiResult');
+
+    mealAnalyzing = true;
+    if (btn) btn.disabled = true;
+    loading.style.display = 'block';
+    result.style.display  = 'none';
+
+    try {
+      const res = await callGas('analyzeMealPhoto', {
+        mealType:  document.getElementById('mealType').value,
+        memo:      document.getElementById('mealMemo').value,
+        imageBlob: imageBlobs[0]
+      });
+
+      if ((!res || !res.advice) || (!res.gasVersion && res.status === 'error')) {
+        result.innerText = buildOfflineMealAdviceClient();
+      } else if (!res.gasVersion && res.advice.indexOf('一時的な問題') !== -1) {
+        result.innerText = buildOfflineMealAdviceClient();
+      } else {
+        result.innerText = res.advice;
+      }
+      result.style.display = 'block';
+    } catch (e) {
+      result.innerText = buildOfflineMealAdviceClient();
+      result.style.display = 'block';
+    } finally {
+      if (btn) btn.disabled = false;
+      loading.style.display = 'none';
+      mealAnalyzing = false;
+    }
+  }
 
   // =========================================
   // 11. データ送信

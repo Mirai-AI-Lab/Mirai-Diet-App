@@ -10,7 +10,7 @@
 
 const SHEET_ID = "1qBeXxm7RB92YuimEN4gfWeRo3IDalTI7ZfqwNC090bg";
 const DRIVE_FOLDER_ID = "1WySdeyLYUyyg27S335cOw22qFyeBV3Le";
-const GAS_VERSION = "20260523-5";
+const GAS_VERSION = "20260523-6";
 
 function getGeminiApiKey() {
   return PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
@@ -88,6 +88,144 @@ function callGeminiWithFallback_(prompt) {
   return result;
 }
 
+function parseImageBlob_(blob) {
+  var match = String(blob).match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+  if (!match) return null;
+  return { mimeType: match[1], data: match[2] };
+}
+
+function callGeminiVision_(prompt, imageBlob, modelName) {
+  var apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return { ok: false, error: "GEMINI_API_KEY が未設定です" };
+  }
+
+  var img = parseImageBlob_(imageBlob);
+  if (!img) {
+    return { ok: false, error: "invalid_image" };
+  }
+
+  var model = modelName || GEMINI_MODEL;
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/"
+    + model + ":generateContent?key=" + apiKey;
+
+  var response;
+  try {
+    response = UrlFetchApp.fetch(url, {
+      method: "post",
+      contentType: "application/json",
+      muteHttpExceptions: true,
+      payload: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: img.mimeType, data: img.data } }
+          ]
+        }]
+      })
+    });
+  } catch (err) {
+    if (isUrlFetchQuotaError_(err)) {
+      markUrlFetchQuotaHit_();
+      return { ok: false, error: "urlfetch_quota", quotaExceeded: true };
+    }
+    return { ok: false, error: String(err.message || err) };
+  }
+
+  var status = response.getResponseCode();
+  var body = response.getContentText();
+
+  if (status !== 200) {
+    var detail = body;
+    try {
+      var errJson = JSON.parse(body);
+      if (errJson.error && errJson.error.message) detail = errJson.error.message;
+    } catch (ignore) {}
+    console.error("Gemini Vision HTTP " + status + " (" + model + "): " + body);
+    return { ok: false, error: "HTTP " + status + ": " + detail, model: model };
+  }
+
+  var json = JSON.parse(body);
+  var text = json.candidates && json.candidates[0] && json.candidates[0].content
+    && json.candidates[0].content.parts && json.candidates[0].content.parts[0]
+    && json.candidates[0].content.parts[0].text;
+
+  if (!text) {
+    console.error("Gemini Vision 空レスポンス (" + model + "): " + body);
+    return { ok: false, error: "empty_response", model: model };
+  }
+
+  return { ok: true, text: text, model: model };
+}
+
+function buildMealAnalysisPrompt_(mealType, memo) {
+  return "あなたは50代女性のダイエット・健康管理の伴走者です。先生口調・評価口調は禁止。\n"
+    + "肯定ファーストで、温かい口語の日本語（です・ます）で答えてください。\n\n"
+    + "この画像は食事の写真、または食事記録アプリのスクリーンショットです。\n"
+    + "食事タイプ: " + (mealType || "食事") + "\n"
+    + (memo ? "ユーザーメモ: " + memo + "\n" : "")
+    + "\n以下の構成で400字以内:\n"
+    + "1. 肯定（記録してくれたこと）\n"
+    + "2. この食事の内容（写真から読める範囲で具体的に）\n"
+    + "3. ひとことアドバイス（バランス・量）\n"
+    + "4. 【食べる順番】この食事に合わせて「1. 〇〇 → 2. 〇〇 → … → 最後にごはん」の形式で。\n"
+    + "   例: 野菜 → 小鉢のタンパク質 → 味噌汁の具 → 最後にごはん\n"
+    + "読めないものは推測で埋めない。極端な制限・医療診断は禁止。";
+}
+
+function buildOfflineMealAdvice_(mealType) {
+  var type = mealType || "食事";
+  return "写真を送ってくれてありがとうございます。"
+    + type + "の記録、続いていますね。\n\n"
+    + "【食べる順番の目安】\n"
+    + "1. 野菜・サラダ\n"
+    + "2. 味噌汁の具・スープ\n"
+    + "3. タンパク質（魚・肉・豆腐・卵など）\n"
+    + "4. 最後にごはん（小盛りから）";
+}
+
+function analyzeMealPhoto(data) {
+  data = data || {};
+  var mealType = data.mealType || "食事";
+  var memo = data.memo || "";
+  var imageBlob = data.imageBlob;
+
+  if (!imageBlob) {
+    return {
+      status: "error",
+      advice: "食事の写真を添付してください。",
+      gasVersion: GAS_VERSION
+    };
+  }
+
+  if (isForceOfflineAI_() || isUrlFetchQuotaCached_() || !getGeminiApiKey()) {
+    return {
+      status: "success",
+      advice: buildOfflineMealAdvice_(mealType),
+      gasVersion: GAS_VERSION,
+      mode: "offline"
+    };
+  }
+
+  var prompt = buildMealAnalysisPrompt_(mealType, memo);
+  var result = callGeminiVision_(prompt, imageBlob);
+
+  if (result.ok) {
+    return { status: "success", advice: result.text, gasVersion: GAS_VERSION };
+  }
+  if (result.quotaExceeded) {
+    markUrlFetchQuotaHit_();
+  }
+
+  console.error("食事分析エラー → オフライン:", result.error);
+  return {
+    status: "success",
+    advice: buildOfflineMealAdvice_(mealType),
+    gasVersion: GAS_VERSION,
+    mode: "offline"
+  };
+}
+
 /** Apps Script で接続テスト: testGeminiConnection を実行（1日1回程度） */
 function testGeminiConnection() {
   var result = callGeminiText_("こんにちは。1文だけ返してください。");
@@ -128,6 +266,9 @@ function doPost(e) {
         break;
       case "getAIAdvice":
         result = getAIAdvice(data || {});
+        break;
+      case "analyzeMealPhoto":
+        result = analyzeMealPhoto(data || {});
         break;
       default:
         result = { status: "error", message: "Unknown action" };
