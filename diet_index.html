@@ -22,8 +22,8 @@
     .container { background: white; border-radius: 16px; padding: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 500px; margin: auto; }
 
     /* ===== タブメニュー ===== */
-    .tab-menu { display: flex; background: #eee; border-radius: 10px; padding: 4px; margin-bottom: 15px; }
-    .tab { flex: 1; padding: 10px 4px; text-align: center; cursor: pointer; border-radius: 8px; color: #666; font-size: 13px; }
+    .tab-menu { display: flex; background: #eee; border-radius: 10px; padding: 4px; margin-bottom: 15px; gap: 2px; }
+    .tab { flex: 1; padding: 8px 2px; text-align: center; cursor: pointer; border-radius: 8px; color: #666; font-size: 11px; }
     .tab.active { background: white; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1); color: var(--dark-green); }
 
     .page { display: none; }
@@ -258,6 +258,60 @@
       font-size: 13px; line-height: 1.8; color: #333; white-space: pre-wrap; display: none;
       border-left: 4px solid #e67e22;
     }
+
+    /* ===== 話しかける（チャット） ===== */
+    .chat-hint {
+      font-size: 12px; color: #777; line-height: 1.6; margin: 0 0 10px;
+      padding: 10px; background: #f9f9f9; border-radius: 10px;
+    }
+    .chat-messages {
+      height: 380px; overflow-y: auto;
+      padding: 10px; background: #f5f7f5;
+      border-radius: 12px; border: 1px solid #e0e8e0;
+      margin-bottom: 10px;
+    }
+    .chat-bubble {
+      max-width: 88%; padding: 10px 12px; border-radius: 14px;
+      font-size: 13px; line-height: 1.75; margin-bottom: 10px;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .chat-bubble.user {
+      margin-left: auto; background: #dcf4e4; color: #1a4d2e;
+      border-bottom-right-radius: 4px;
+    }
+    .chat-bubble.assistant {
+      margin-right: auto; background: white; color: #333;
+      border: 1px solid #e8e8e8; border-bottom-left-radius: 4px;
+    }
+    .chat-bubble img {
+      max-width: 100%; border-radius: 8px; margin-top: 6px; display: block;
+    }
+    .chat-input-row {
+      display: grid; grid-template-columns: 42px 1fr 56px; gap: 6px; align-items: end;
+    }
+    .chat-photo-btn {
+      height: 42px; border: 1px solid #ddd; background: white;
+      border-radius: 10px; font-size: 18px; cursor: pointer;
+    }
+    .chat-input {
+      margin: 0; min-height: 42px; max-height: 100px; resize: none;
+      font-size: 14px; padding: 10px;
+    }
+    .chat-send-btn {
+      height: 42px; border: none; background: var(--dark-green); color: white;
+      border-radius: 10px; font-weight: bold; font-size: 13px; cursor: pointer;
+    }
+    .chat-send-btn:disabled { background: #ccc; }
+    .chat-image-preview {
+      margin-bottom: 8px; position: relative; display: inline-block;
+    }
+    .chat-image-preview img {
+      height: 64px; border-radius: 8px; border: 1px solid #ddd;
+    }
+    .chat-image-preview .del-btn { top: -6px; right: -6px; }
+    .chat-typing {
+      font-size: 12px; color: #999; padding: 4px 8px; display: none;
+    }
   </style>
 </head>
 <body>
@@ -267,6 +321,7 @@
   <!-- ========== タブメニュー ========== -->
   <div class="tab-menu">
     <div class="tab active" onclick="showPage('record')">📝 記録</div>
+    <div class="tab" onclick="showPage('chat')">💬 話す</div>
     <div class="tab" onclick="showPage('history')">📋 履歴</div>
     <div class="tab" onclick="showPage('summary')">📊 サマリー</div>
   </div>
@@ -387,6 +442,21 @@
     <label>日付</label>
     <input type="date" id="date">
     <button id="submitBtn" onclick="sendData()" disabled>認証中...</button>
+  </div>
+
+  <!-- ========== 話しかけるタブ ========== -->
+  <div id="pageChat" class="page">
+    <p class="chat-hint">ChatGPTと同じく、<strong>会話が続きます</strong>。食事スクショを送って「順番教えて」、あとから「ごはん半分なら？」もOK。</p>
+    <div id="chatMessages" class="chat-messages"></div>
+    <div class="chat-typing" id="chatTyping">返事を考えています…</div>
+    <div id="chatImagePreview" class="chat-image-preview" style="display:none;"></div>
+    <div class="chat-input-row">
+      <button type="button" class="chat-photo-btn" onclick="document.getElementById('chatImageInput').click()">📷</button>
+      <input type="file" id="chatImageInput" accept="image/*" style="display:none" onchange="handleChatImage(this)">
+      <textarea id="chatInput" class="chat-input" placeholder="メッセージを入力…" rows="2"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMessage();}"></textarea>
+      <button type="button" id="chatSendBtn" class="chat-send-btn" onclick="sendChatMessage()">送信</button>
+    </div>
   </div>
 
   <!-- ========== 履歴タブ ========== -->
@@ -525,6 +595,10 @@
   let currentUserName   = null;
   let mealAnalyzing     = false;
   let mealAnalyzeTimer  = null;
+  let chatMessages      = [];
+  let chatPendingImage  = null;
+  let chatSending       = false;
+  let chatInitialized   = false;
 
   // =========================================
   // 1. 起動時処理
@@ -662,10 +736,12 @@
   function showPage(p) {
     document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-    const pageMap = { record: 0, history: 1, summary: 2 };
+    const pageMap = { record: 0, chat: 1, history: 2, summary: 3 };
     document.getElementById('page' + p.charAt(0).toUpperCase() + p.slice(1)).classList.add('active');
     document.querySelectorAll('.tab')[pageMap[p]].classList.add('active');
-    if (p !== 'record') fetchAllData(p);
+    if (p === 'chat') initChatPage();
+    if (p === 'history') fetchAllData('history');
+    if (p === 'summary') fetchAllData('summary');
   }
 
   // =========================================
@@ -1231,6 +1307,146 @@
     } finally {
       btn.disabled          = false;
       loading.style.display = 'none';
+    }
+  }
+
+  // =========================================
+  // 13. 話しかける（対話式チャット）
+  // =========================================
+  function initChatPage() {
+    if (chatInitialized) {
+      renderChatMessages();
+      return;
+    }
+    chatMessages = [{
+      role: 'assistant',
+      text: 'こんにちは。食事のスクショや、体重のこと、なんでも送ってください。\n「この食事、順番教えて」みたいに、会話を続けられます。'
+    }];
+    chatInitialized = true;
+    renderChatMessages();
+  }
+
+  function renderChatMessages() {
+    const box = document.getElementById('chatMessages');
+    if (!box) return;
+    box.innerHTML = '';
+    chatMessages.forEach(msg => {
+      const div = document.createElement('div');
+      div.className = 'chat-bubble ' + (msg.role === 'user' ? 'user' : 'assistant');
+      let html = msg.text ? escapeHtml_(msg.text) : '';
+      if (msg.image) html += `<img src="${msg.image}" alt="添付画像">`;
+      div.innerHTML = html;
+      box.appendChild(div);
+    });
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function escapeHtml_(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function handleChatImage(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      chatPendingImage = e.target.result;
+      const preview = document.getElementById('chatImagePreview');
+      preview.style.display = 'inline-block';
+      preview.innerHTML = `<img src="${chatPendingImage}"><div class="del-btn" onclick="clearChatImage()">×</div>`;
+    };
+    reader.readAsDataURL(file);
+    input.value = '';
+  }
+
+  function clearChatImage() {
+    chatPendingImage = null;
+    const preview = document.getElementById('chatImagePreview');
+    preview.style.display = 'none';
+    preview.innerHTML = '';
+  }
+
+  function buildOfflineChatReplyClient(message, hasImage) {
+    const msg = String(message || '');
+    if (hasImage || /食事|順番|ごはん|夕食|昼食|朝食/.test(msg)) {
+      return '写真を送ってくれてありがとうございます。'
+        + '今日は詳しい分析は明日以降になりますが、一般的な食べる順番はこうです。\n\n'
+        + '1. 野菜・サラダ\n'
+        + '2. 味噌汁の具・スープ\n'
+        + '3. タンパク質（魚・肉・豆腐など）\n'
+        + '4. 最後にごはん（小盛りから）\n\n'
+        + '「ごはん半分なら？」など、続けて聞いてもらえれば一緒に考えます。';
+    }
+    return '受け取りました。続けられていることがいちばん大事です。'
+      + '食事のスクショや、体重のこと、なんでも送ってくださいね。';
+  }
+
+  function shouldUseClientChatReply_(res) {
+    if (!res || !res.reply) return true;
+    if (!res.gasVersion) return true;
+    if (res.status === 'error') return true;
+    return false;
+  }
+
+  async function sendChatMessage() {
+    if (chatSending) return;
+
+    const input = document.getElementById('chatInput');
+    const text  = (input.value || '').trim();
+    if (!text && !chatPendingImage) return;
+
+    const userMsg = {
+      role: 'user',
+      text: text || '（写真を送りました）',
+      image: chatPendingImage || null
+    };
+    chatMessages.push(userMsg);
+    renderChatMessages();
+    input.value = '';
+
+    const apiHistory = chatMessages.slice(0, -1).map(m => ({
+      role: m.role,
+      text: m.text
+    }));
+
+    const sendImage = chatPendingImage;
+    clearChatImage();
+
+    const btn   = document.getElementById('chatSendBtn');
+    const typing = document.getElementById('chatTyping');
+    chatSending = true;
+    if (btn) btn.disabled = true;
+    typing.style.display = 'block';
+
+    try {
+      const res = await callGas('chatReply', {
+        lineId: currentUserId,
+        history: apiHistory,
+        message: text,
+        imageBlob: sendImage
+      });
+
+      let reply;
+      if (shouldUseClientChatReply_(res)) {
+        reply = buildOfflineChatReplyClient(text, !!sendImage);
+      } else {
+        reply = res.reply;
+      }
+      chatMessages.push({ role: 'assistant', text: reply });
+      renderChatMessages();
+    } catch (e) {
+      chatMessages.push({
+        role: 'assistant',
+        text: buildOfflineChatReplyClient(text, !!sendImage)
+      });
+      renderChatMessages();
+    } finally {
+      chatSending = false;
+      if (btn) btn.disabled = false;
+      typing.style.display = 'none';
     }
   }
 </script>

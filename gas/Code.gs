@@ -10,7 +10,7 @@
 
 const SHEET_ID = "1qBeXxm7RB92YuimEN4gfWeRo3IDalTI7ZfqwNC090bg";
 const DRIVE_FOLDER_ID = "1WySdeyLYUyyg27S335cOw22qFyeBV3Le";
-const GAS_VERSION = "20260523-6";
+const GAS_VERSION = "20260524-7";
 
 function getGeminiApiKey() {
   return PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
@@ -226,6 +226,184 @@ function analyzeMealPhoto(data) {
   };
 }
 
+function buildCoachSystemInstruction_() {
+  return "あなたは50代女性の健康管理の伴走者です。先生口調・評価口調は禁止。\n"
+    + "【必ず守る順番】\n"
+    + "1. 肯定 … 続けている事実・小さな変化を具体的に認める\n"
+    + "2. 現状 … 数字や記録を事実ベースで短く\n"
+    + "3. 対策 … 1〜2個だけ（詰め込まない）\n"
+    + "4. 伴走 … 「一緒に」「次の一歩は」で締める\n\n"
+    + "食事の写真・スクショが来たら、内容を読み取り、"
+    + "【食べる順番】をこの食事に合わせて具体的に提案する。"
+    + "（例: 野菜 → 小鉢のタンパク質 → 味噌汁の具 → 最後にごはん）\n"
+    + "会話は短い往復を想定。ユーザーの追加質問には前の文脈を踏まえて答える。\n"
+    + "400字以内。口語に近い温かい日本語。極端な制限・医療診断は禁止。";
+}
+
+function buildGeminiContentsFromChat_(history) {
+  var contents = [];
+  history.forEach(function (msg) {
+    var role = msg.role === "assistant" ? "model" : "user";
+    var parts = [];
+    if (msg.text) parts.push({ text: msg.text });
+    if (msg.imageBlob && role === "user") {
+      var img = parseImageBlob_(msg.imageBlob);
+      if (img) parts.push({ inline_data: { mime_type: img.mimeType, data: img.data } });
+    }
+    if (parts.length) contents.push({ role: role, parts: parts });
+  });
+  return contents;
+}
+
+function callGeminiChat_(contents, modelName) {
+  var apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return { ok: false, error: "GEMINI_API_KEY が未設定です" };
+  }
+
+  var model = modelName || GEMINI_MODEL;
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/"
+    + model + ":generateContent?key=" + apiKey;
+
+  var response;
+  try {
+    response = UrlFetchApp.fetch(url, {
+      method: "post",
+      contentType: "application/json",
+      muteHttpExceptions: true,
+      payload: JSON.stringify({
+        systemInstruction: { parts: [{ text: buildCoachSystemInstruction_() }] },
+        contents: contents
+      })
+    });
+  } catch (err) {
+    if (isUrlFetchQuotaError_(err)) {
+      markUrlFetchQuotaHit_();
+      return { ok: false, error: "urlfetch_quota", quotaExceeded: true };
+    }
+    return { ok: false, error: String(err.message || err) };
+  }
+
+  var status = response.getResponseCode();
+  var body = response.getContentText();
+
+  if (status !== 200) {
+    var detail = body;
+    try {
+      var errJson = JSON.parse(body);
+      if (errJson.error && errJson.error.message) detail = errJson.error.message;
+    } catch (ignore) {}
+    console.error("Gemini Chat HTTP " + status + ": " + body);
+    return { ok: false, error: "HTTP " + status + ": " + detail };
+  }
+
+  var json = JSON.parse(body);
+  var text = json.candidates && json.candidates[0] && json.candidates[0].content
+    && json.candidates[0].content.parts && json.candidates[0].content.parts[0]
+    && json.candidates[0].content.parts[0].text;
+
+  if (!text) {
+    return { ok: false, error: "empty_response" };
+  }
+  return { ok: true, text: text };
+}
+
+function buildOfflineChatReply_(message, hasImage) {
+  var msg = String(message || "");
+  if (hasImage || msg.indexOf("食事") !== -1 || msg.indexOf("順番") !== -1
+      || msg.indexOf("ごはん") !== -1 || msg.indexOf("夕食") !== -1) {
+    return "写真を送ってくれてありがとうございます。"
+      + "今日は詳しい分析は明日以降になりますが、一般的な食べる順番はこうです。\n\n"
+      + "1. 野菜・サラダ\n"
+      + "2. 味噌汁の具・スープ\n"
+      + "3. タンパク質（魚・肉・豆腐など）\n"
+      + "4. 最後にごはん（小盛りから）\n\n"
+      + "「ごはん半分なら？」など、続けて聞いてもらえれば一緒に考えます。";
+  }
+  return "受け取りました。続けられていることがいちばん大事です。"
+    + "食事のスクショや、体重のこと、なんでも送ってくださいね。";
+}
+
+function chatReply(data) {
+  data = data || {};
+  var lineId = data.lineId;
+  var history = data.history || [];
+  var message = String(data.message || "").trim();
+  var imageBlob = data.imageBlob || null;
+
+  if (!message && !imageBlob) {
+    return {
+      status: "error",
+      reply: "メッセージか写真を送ってください。",
+      gasVersion: GAS_VERSION
+    };
+  }
+
+  var userTurn = {
+    role: "user",
+    text: message || "（写真を送りました。食事を見てアドバイスください）",
+    imageBlob: imageBlob
+  };
+
+  var apiHistory = history.concat([userTurn]);
+  if (apiHistory.length > 16) {
+    apiHistory = apiHistory.slice(apiHistory.length - 16);
+  }
+
+  if (isForceOfflineAI_() || isUrlFetchQuotaCached_() || !getGeminiApiKey()) {
+    return {
+      status: "success",
+      reply: buildOfflineChatReply_(message, !!imageBlob),
+      gasVersion: GAS_VERSION,
+      mode: "offline"
+    };
+  }
+
+  var contents = buildGeminiContentsFromChat_(apiHistory);
+
+  if (history.length === 0) {
+    var records = getRecentRecordsForUser_(lineId, 12);
+    if (records.length) {
+      contents.unshift({
+        role: "model",
+        parts: [{ text: "記録を確認しました。一緒に続けていきましょう。" }]
+      });
+      contents.unshift({
+        role: "user",
+        parts: [{ text: "【参考：直近の健康記録】\n" + buildAdviceContext_(records) }]
+      });
+    }
+  }
+
+  var result = callGeminiChat_(contents);
+  if (result.ok) {
+    return { status: "success", reply: result.text, gasVersion: GAS_VERSION };
+  }
+  if (result.quotaExceeded) {
+    markUrlFetchQuotaHit_();
+  }
+
+  console.error("chatReply エラー → オフライン:", result.error);
+  return {
+    status: "success",
+    reply: buildOfflineChatReply_(message, !!imageBlob),
+    gasVersion: GAS_VERSION,
+    mode: "offline"
+  };
+}
+
+/** Apps Script で会話テスト: testChatReply を実行 */
+function testChatReply() {
+  var res = chatReply({
+    lineId: "",
+    history: [],
+    message: "今日の夕食、順番教えて"
+  });
+  Logger.log(res.status + " / " + res.gasVersion);
+  Logger.log(res.reply);
+  return res;
+}
+
 /** Apps Script で接続テスト: testGeminiConnection を実行（1日1回程度） */
 function testGeminiConnection() {
   var result = callGeminiText_("こんにちは。1文だけ返してください。");
@@ -269,6 +447,9 @@ function doPost(e) {
         break;
       case "analyzeMealPhoto":
         result = analyzeMealPhoto(data || {});
+        break;
+      case "chatReply":
+        result = chatReply(data || {});
         break;
       default:
         result = { status: "error", message: "Unknown action" };
