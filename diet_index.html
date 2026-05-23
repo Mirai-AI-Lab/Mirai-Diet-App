@@ -237,27 +237,24 @@
       border-left: 4px solid var(--dark-green);
     }
 
-    /* ===== 食事AI分析 ===== */
-    .meal-ai-section {
+    /* ===== 食事 → 相談 ===== */
+    .meal-handoff {
       margin: 12px 0 16px;
       padding: 14px;
       background: linear-gradient(135deg, #fff8ee, #e8f8ee);
       border-radius: 14px;
       border: 1px solid #e8dcc5;
     }
-    .meal-ai-title { font-size: 14px; font-weight: bold; color: #c67a17; margin-bottom: 8px; }
-    #mealAiBtn {
-      background: linear-gradient(135deg, #e67e22, #27ae60);
+    .meal-handoff-status {
+      font-size: 13px; color: #666; margin-bottom: 10px; line-height: 1.6;
+    }
+    .meal-handoff-status.ready { color: var(--dark-green); font-weight: bold; }
+    #mealConsultBtn {
+      background: linear-gradient(135deg, #3498db, #27ae60);
       color: white; border: none; width: 100%; padding: 12px;
       border-radius: 10px; font-size: 14px; font-weight: bold; cursor: pointer;
     }
-    #mealAiBtn:disabled { background: #ccc; }
-    .meal-ai-loading { text-align: center; padding: 12px; color: #888; font-size: 13px; display: none; }
-    .meal-ai-result {
-      margin-top: 10px; padding: 12px; background: white; border-radius: 10px;
-      font-size: 13px; line-height: 1.8; color: #333; white-space: pre-wrap; display: none;
-      border-left: 4px solid #e67e22;
-    }
+    #mealConsultBtn:disabled { background: #ccc; }
 
     /* ===== 話しかける（チャット） ===== */
     .chat-hint {
@@ -312,6 +309,21 @@
     .chat-typing {
       font-size: 12px; color: #999; padding: 4px 8px; display: none;
     }
+    .chat-session-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      padding: 10px 12px; margin-bottom: 8px;
+      background: #e8f8ee; border-radius: 10px; border: 1px solid #c8e6d4;
+      font-size: 12px; color: #1e8449;
+    }
+    .chat-session-bar button {
+      margin-left: auto; border: none; background: white; color: var(--dark-green);
+      padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: bold;
+      cursor: pointer; border: 1px solid #b8dcc8;
+    }
+    .chat-memories {
+      font-size: 11px; color: #888; margin-bottom: 8px; line-height: 1.5;
+      padding: 8px 10px; background: #fafafa; border-radius: 8px;
+    }
   </style>
 </head>
 <body>
@@ -362,11 +374,9 @@
       <input type="file" id="gallery" accept="image/*" multiple           style="display:none" onchange="handleFiles(this)">
       <div id="previewContainer" class="preview-container"></div>
 
-      <div class="meal-ai-section" id="mealAiSection" style="display:none;">
-        <div class="meal-ai-title">🍽️ 食事AI分析（ChatGPT同型）</div>
-        <button type="button" id="mealAiBtn" onclick="analyzeMealPhoto()">🤖 この食事を分析する</button>
-        <div class="meal-ai-loading" id="mealAiLoading">写真を見ています…</div>
-        <div class="meal-ai-result" id="mealAiResult"></div>
+      <div class="meal-handoff" id="mealHandoff" style="display:none;">
+        <div class="meal-handoff-status" id="mealIngestStatus">📷 写真を認識しています…</div>
+        <button type="button" id="mealConsultBtn" onclick="goConsultWithMeal()" disabled>💬 この写真で相談する</button>
       </div>
 
       <label>メモ（食材・量など）</label>
@@ -446,7 +456,12 @@
 
   <!-- ========== 話しかけるタブ ========== -->
   <div id="pageChat" class="page">
-    <p class="chat-hint">ChatGPTと同じく、<strong>会話が続きます</strong>。食事スクショを送って「順番教えて」、あとから「ごはん半分なら？」もOK。</p>
+    <p class="chat-hint">写真は<strong>1回だけ</strong>。裏で認識したあと、「順番教えて」「ごはん半分なら？」と<strong>会話が続きます</strong>。過去の記録も見ながら答えます。「覚えて：〜」で癖も記憶できます。<span id="chatGasVersion" style="display:block;font-size:10px;color:#aaa;margin-top:6px;"></span></p>
+    <div id="chatMemories" class="chat-memories" style="display:none;"></div>
+    <div id="chatSessionBar" class="chat-session-bar" style="display:none;">
+      <span>📷 食事写真を認識済み · <span id="chatSessionMealType">食事</span></span>
+      <button type="button" onclick="saveMealFromChat()">📝 記録に残す</button>
+    </div>
     <div id="chatMessages" class="chat-messages"></div>
     <div class="chat-typing" id="chatTyping">返事を考えています…</div>
     <div id="chatImagePreview" class="chat-image-preview" style="display:none;"></div>
@@ -581,7 +596,7 @@
 
 <script>
   const LIFF_ID = "2010164389-Gz0BXhsl";
-  const GAS_URL = "https://script.google.com/macros/s/AKfycbzfD6Lhyk3kgSkNFICO9bMdtB5TCsbcP9LXQU1bM3Pecgf2DNdrhGfC7zObto3vXmcJ/exec";
+  const GAS_URL = "https://script.google.com/macros/s/AKfycbw4sXoZtfgXfKgOXr7KsrvaOC9p3rALSWcLTW-SKoP0VsLdkDja4VHJZy2jKZL39cet/exec";
   const DEFAULT_TARGET_WEIGHT = 55.0;
 
   let currentRecordType = "meal";
@@ -593,12 +608,14 @@
   let exerciseChart     = null;
   let currentUserId     = null;
   let currentUserName   = null;
-  let mealAnalyzing     = false;
-  let mealAnalyzeTimer  = null;
+  let sharedMealContext = null;
+  let chatSessionActive = false;
+  let chatMemories      = [];
   let chatMessages      = [];
   let chatPendingImage  = null;
   let chatSending       = false;
   let chatInitialized   = false;
+  let mealIngesting     = false;
 
   // =========================================
   // 1. 起動時処理
@@ -698,30 +715,116 @@
   // 5. 記録種別切り替え
   // =========================================
   function setRecordType(type) {
+    const prevType = currentRecordType;
     currentRecordType = type;
     document.querySelectorAll('.rtype-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('rtype-' + type).classList.add('active');
     document.querySelectorAll('.form-section').forEach(f => f.classList.remove('active'));
     document.getElementById('form-' + type).classList.add('active');
-    imageBlobs = [];
-    const pc = document.getElementById('previewContainer');
-    if (pc) pc.innerHTML = "";
-    clearMealAnalysis();
+    if (type !== 'meal' && prevType === 'meal') {
+      sharedMealContext = null;
+      chatSessionActive = false;
+    }
+    if (prevType !== type) {
+      imageBlobs = [];
+      const pc = document.getElementById('previewContainer');
+      if (pc) pc.innerHTML = "";
+      updateMealHandoffUI();
+    }
   }
 
-  function clearMealAnalysis() {
-    const section = document.getElementById('mealAiSection');
-    const result  = document.getElementById('mealAiResult');
-    const loading = document.getElementById('mealAiLoading');
-    if (section) section.style.display = 'none';
-    if (result) { result.innerText = ''; result.style.display = 'none'; }
-    if (loading) loading.style.display = 'none';
+  function updateMealHandoffUI() {
+    const box = document.getElementById('mealHandoff');
+    const status = document.getElementById('mealIngestStatus');
+    const btn = document.getElementById('mealConsultBtn');
+    if (!box || !status || !btn) return;
+
+    const show = currentRecordType === 'meal' && imageBlobs.length > 0;
+    box.style.display = show ? 'block' : 'none';
+    if (!show) return;
+
+    if (mealIngesting) {
+      status.className = 'meal-handoff-status';
+      status.innerText = '📷 裏で認識しています…';
+      btn.disabled = true;
+    } else if (sharedMealContext && sharedMealContext.ingested) {
+      status.className = 'meal-handoff-status ready';
+      status.innerText = '✓ 認識済み。💬 話すタブで続きの質問ができます。';
+      btn.disabled = false;
+    } else {
+      status.className = 'meal-handoff-status';
+      status.innerText = '📷 写真を認識します…';
+      btn.disabled = true;
+    }
   }
 
-  function updateMealAiVisibility() {
-    const section = document.getElementById('mealAiSection');
-    if (!section) return;
-    section.style.display = (currentRecordType === 'meal' && imageBlobs.length > 0) ? 'block' : 'none';
+  async function ingestMealInBackground() {
+    if (currentRecordType !== 'meal' || !imageBlobs.length || mealIngesting) return;
+
+    sharedMealContext = {
+      blob: imageBlobs[0],
+      mealType: document.getElementById('mealType').value,
+      memo: document.getElementById('mealMemo').value,
+      ingested: false,
+      analysis: null
+    };
+    mealIngesting = true;
+    updateMealHandoffUI();
+
+    try {
+      const res = await callGas('ingestMealPhoto', {
+        lineId: currentUserId,
+        mealType: sharedMealContext.mealType,
+        memo: sharedMealContext.memo,
+        imageBlob: sharedMealContext.blob
+      });
+      sharedMealContext.ingested = true;
+      sharedMealContext.analysis = res.analysis || '';
+      chatSessionActive = res.sessionActive !== false;
+    } catch (e) {
+      sharedMealContext.ingested = true;
+      sharedMealContext.analysis = buildOfflineMealAdviceClient();
+      chatSessionActive = true;
+    } finally {
+      mealIngesting = false;
+      updateMealHandoffUI();
+      updateChatSessionBar();
+    }
+  }
+
+  async function goConsultWithMeal() {
+    if (!sharedMealContext || !imageBlobs.length) return;
+    if (!sharedMealContext.ingested) {
+      await ingestMealInBackground();
+    }
+
+    document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+    document.getElementById('pageChat').classList.add('active');
+    document.querySelectorAll('.tab')[1].classList.add('active');
+
+    startMealConsultChat_();
+    await refreshChatContext_();
+    renderChatMemories_();
+  }
+
+  function startMealConsultChat_() {
+    if (!sharedMealContext) return;
+    chatMessages = [
+      {
+        role: 'user',
+        text: '（' + sharedMealContext.mealType + 'の写真を送りました）',
+        image: sharedMealContext.blob
+      },
+      {
+        role: 'assistant',
+        text: sharedMealContext.analysis || buildOfflineMealAdviceClient()
+      }
+    ];
+    chatInitialized = true;
+    chatSessionActive = true;
+    renderChatMessages();
+    updateChatSessionBar();
   }
 
   function setBowel(status) {
@@ -1074,10 +1177,8 @@
       reader.onload = e => {
         imageBlobs.push(e.target.result);
         renderPreviews();
-        updateMealAiVisibility();
         if (currentRecordType === 'meal') {
-          clearTimeout(mealAnalyzeTimer);
-          mealAnalyzeTimer = setTimeout(analyzeMealPhoto, 600);
+          ingestMealInBackground();
         }
       };
       reader.readAsDataURL(file);
@@ -1094,16 +1195,19 @@
       div.innerHTML = `<img src="${blob}" class="preview-img"><div class="del-btn" onclick="removeImg(${i})">×</div>`;
       container.appendChild(div);
     });
-    updateMealAiVisibility();
+    updateMealHandoffUI();
   }
 
   function removeImg(i) {
     imageBlobs.splice(i, 1);
     renderPreviews();
     if (imageBlobs.length && currentRecordType === 'meal') {
-      analyzeMealPhoto();
+      ingestMealInBackground();
     } else {
-      clearMealAnalysis();
+      sharedMealContext = null;
+      chatSessionActive = false;
+      updateMealHandoffUI();
+      updateChatSessionBar();
     }
   }
 
@@ -1115,43 +1219,6 @@
       + '2. 味噌汁の具・スープ\n'
       + '3. タンパク質（魚・肉・豆腐・卵など）\n'
       + '4. 最後にごはん（小盛りから）';
-  }
-
-  async function analyzeMealPhoto() {
-    if (currentRecordType !== 'meal' || !imageBlobs.length || mealAnalyzing) return;
-
-    const btn     = document.getElementById('mealAiBtn');
-    const loading = document.getElementById('mealAiLoading');
-    const result  = document.getElementById('mealAiResult');
-
-    mealAnalyzing = true;
-    if (btn) btn.disabled = true;
-    loading.style.display = 'block';
-    result.style.display  = 'none';
-
-    try {
-      const res = await callGas('analyzeMealPhoto', {
-        mealType:  document.getElementById('mealType').value,
-        memo:      document.getElementById('mealMemo').value,
-        imageBlob: imageBlobs[0]
-      });
-
-      if ((!res || !res.advice) || (!res.gasVersion && res.status === 'error')) {
-        result.innerText = buildOfflineMealAdviceClient();
-      } else if (!res.gasVersion && res.advice.indexOf('一時的な問題') !== -1) {
-        result.innerText = buildOfflineMealAdviceClient();
-      } else {
-        result.innerText = res.advice;
-      }
-      result.style.display = 'block';
-    } catch (e) {
-      result.innerText = buildOfflineMealAdviceClient();
-      result.style.display = 'block';
-    } finally {
-      if (btn) btn.disabled = false;
-      loading.style.display = 'none';
-      mealAnalyzing = false;
-    }
   }
 
   // =========================================
@@ -1313,17 +1380,116 @@
   // =========================================
   // 13. 話しかける（対話式チャット）
   // =========================================
-  function initChatPage() {
+  async function initChatPage() {
+    await refreshChatContext_();
+    await updateChatAiStatus_();
     if (chatInitialized) {
       renderChatMessages();
+      updateChatSessionBar();
+      renderChatMemories_();
       return;
     }
     chatMessages = [{
       role: 'assistant',
-      text: 'こんにちは。食事のスクショや、体重のこと、なんでも送ってください。\n「この食事、順番教えて」みたいに、会話を続けられます。'
+      text: 'こんにちは。食事の写真は1回送れば、裏で認識します。\n'
+        + '「順番教えて」「ごはん半分なら？」と続けて聞いてください。\n'
+        + '「覚えて：夕方に小腹が空く」みたいに、癖も記憶できます。'
     }];
     chatInitialized = true;
     renderChatMessages();
+    updateChatSessionBar();
+    renderChatMemories_();
+  }
+
+  async function updateChatAiStatus_() {
+    const el = document.getElementById('chatGasVersion');
+    if (!el) return;
+    try {
+      const res = await callGas('getAIStatus', {});
+      const ver = res.gasVersion || '?';
+      if (res.chatOnline) {
+        el.innerText = 'AI: オンライン（' + ver + '）';
+        el.style.color = '#27ae60';
+      } else {
+        const reason = res.chatOfflineReason === 'urlfetch_quota'
+          ? '今日の通信上限'
+          : (res.chatOfflineReason === 'no_api_key' ? 'APIキー未設定' : 'オフライン');
+        el.innerText = 'AI: 簡易モード（' + reason + ' / ' + ver + '）';
+        el.style.color = '#e67e22';
+      }
+    } catch (e) {
+      el.innerText = '接続確認できません（GAS再デプロイ要？）';
+      el.style.color = '#e74c3c';
+    }
+  }
+
+  async function refreshChatContext_() {
+    if (!currentUserId) return;
+    try {
+      const res = await callGas('getChatContext', { lineId: currentUserId });
+      if (res.memories) chatMemories = res.memories;
+      if (res.sessionActive) chatSessionActive = true;
+      if (res.session && res.session.mealAnalysis && !sharedMealContext) {
+        sharedMealContext = {
+          blob: null,
+          mealType: res.session.mealType || '食事',
+          memo: res.session.memo || '',
+          ingested: true,
+          analysis: res.session.mealAnalysis
+        };
+      }
+    } catch (e) { /* オフラインでもチャットは続ける */ }
+  }
+
+  function renderChatMemories_() {
+    const box = document.getElementById('chatMemories');
+    if (!box) return;
+    if (!chatMemories.length) {
+      box.style.display = 'none';
+      return;
+    }
+    box.style.display = 'block';
+    box.innerText = '💡 覚えていること: ' + chatMemories.slice(-3).join(' / ');
+  }
+
+  function updateChatSessionBar() {
+    const bar = document.getElementById('chatSessionBar');
+    const typeEl = document.getElementById('chatSessionMealType');
+    if (!bar) return;
+    const active = chatSessionActive && sharedMealContext;
+    bar.style.display = active ? 'flex' : 'none';
+    if (active && typeEl) {
+      typeEl.innerText = sharedMealContext.mealType || '食事';
+    }
+  }
+
+  async function saveMealFromChat() {
+    if (!sharedMealContext) return alert('保存する食事がありません');
+    const blobs = sharedMealContext.blob ? [sharedMealContext.blob] : imageBlobs.slice(0, 1);
+    if (!blobs.length) return alert('写真がありません');
+
+    const payload = {
+      lineId: currentUserId,
+      userName: currentUserName,
+      date: document.getElementById('date').value || new Date().toISOString().slice(0, 10),
+      recordType: '食事',
+      subType: sharedMealContext.mealType || '食事',
+      memo: sharedMealContext.memo || document.getElementById('mealMemo')?.value || '',
+      imageBlobs: blobs
+    };
+
+    try {
+      const res = await callGas('uploadRecord', payload);
+      if (res.status === 'success') {
+        alert('記録しました！');
+        chatMessages.push({ role: 'assistant', text: '📝 食事を記録に残しました。' });
+        renderChatMessages();
+      } else {
+        throw new Error('API');
+      }
+    } catch (e) {
+      alert('記録に失敗しました');
+    }
   }
 
   function renderChatMessages() {
@@ -1354,6 +1520,14 @@
     const reader = new FileReader();
     reader.onload = e => {
       chatPendingImage = e.target.result;
+      sharedMealContext = {
+        blob: chatPendingImage,
+        mealType: document.getElementById('mealType')?.value || '食事',
+        memo: '',
+        ingested: false,
+        analysis: null
+      };
+      chatSessionActive = false;
       const preview = document.getElementById('chatImagePreview');
       preview.style.display = 'inline-block';
       preview.innerHTML = `<img src="${chatPendingImage}"><div class="del-btn" onclick="clearChatImage()">×</div>`;
@@ -1369,19 +1543,42 @@
     preview.innerHTML = '';
   }
 
-  function buildOfflineChatReplyClient(message, hasImage) {
+  function buildOfflineChatReplyClient(message, hasSession) {
     const msg = String(message || '');
-    if (hasImage || /食事|順番|ごはん|夕食|昼食|朝食/.test(msg)) {
-      return '写真を送ってくれてありがとうございます。'
-        + '今日は詳しい分析は明日以降になりますが、一般的な食べる順番はこうです。\n\n'
+
+    if (/お腹|満腹|いっぱい|食べきれ|途中で/.test(msg)) {
+      return '途中で満腹、よくあるんですよね。無理に残さなくて大丈夫です。\n\n'
+        + '【いまからできること】\n'
+        + '・残りは保存して、次の食事で調整\n'
+        + '・次は「野菜 → タンパク質 → ごはんは小盛り」の順で、途中で止まりやすくなります\n\n'
+        + '今日はどこまで食べました？ 残りが気になるなら、一緒に考えましょう。';
+    }
+
+    if (/半分|少な|減ら|小盛り|残り/.test(msg)) {
+      if (hasSession && sharedMealContext?.analysis) {
+        return 'ごはん半分、いい判断ですよね。\n\n'
+          + '先に野菜とタンパク質、最後にごはん半分だと満足感を保ちやすいです。\n\n'
+          + sharedMealContext.analysis;
+      }
+      return 'ごはん半分、いい判断ですよね。\n'
+        + '満足感を保ちながら量を抑えるなら、先に野菜とタンパク質、最後にごはん半分がおすすめです。';
+    }
+
+    if (hasSession && sharedMealContext?.analysis && /順番|食事|ごはん|夕食|昼食|朝食/.test(msg)) {
+      return '送ってくれた食事、覚えています。\n\n' + sharedMealContext.analysis;
+    }
+
+    if (/食事|順番|ごはん|夕食|昼食|朝食/.test(msg)) {
+      return '一般的な食べる順番はこうです。\n\n'
         + '1. 野菜・サラダ\n'
         + '2. 味噌汁の具・スープ\n'
         + '3. タンパク質（魚・肉・豆腐など）\n'
         + '4. 最後にごはん（小盛りから）\n\n'
-        + '「ごはん半分なら？」など、続けて聞いてもらえれば一緒に考えます。';
+        + '食事の写真を送ってもらえれば、この食事に合わせて具体的に出します。';
     }
-    return '受け取りました。続けられていることがいちばん大事です。'
-      + '食事のスクショや、体重のこと、なんでも送ってくださいね。';
+
+    return '聞いてくれてありがとうございます。食事のことなら写真を1枚送ってください。\n'
+      + '「順番教えて」「途中でお腹いっぱいになった」など、一緒に考えます。';
   }
 
   function shouldUseClientChatReply_(res) {
@@ -1396,11 +1593,11 @@
 
     const input = document.getElementById('chatInput');
     const text  = (input.value || '').trim();
-    if (!text && !chatPendingImage) return;
+    if (!text && !chatPendingImage && !chatSessionActive) return;
 
     const userMsg = {
       role: 'user',
-      text: text || '（写真を送りました）',
+      text: text || (chatPendingImage ? '（写真を送りました）' : '（相談します）'),
       image: chatPendingImage || null
     };
     chatMessages.push(userMsg);
@@ -1415,6 +1612,24 @@
     const sendImage = chatPendingImage;
     clearChatImage();
 
+    const payload = {
+      lineId: currentUserId,
+      history: apiHistory,
+      message: text,
+      mealType: sharedMealContext?.mealType || document.getElementById('mealType')?.value || '食事',
+      memo: sharedMealContext?.memo || document.getElementById('mealMemo')?.value || ''
+    };
+
+    if (sendImage) {
+      if (sharedMealContext?.ingested && sendImage === sharedMealContext.blob) {
+        payload.useSession = true;
+      } else {
+        payload.imageBlob = sendImage;
+      }
+    } else if (chatSessionActive || sharedMealContext?.ingested) {
+      payload.useSession = true;
+    }
+
     const btn   = document.getElementById('chatSendBtn');
     const typing = document.getElementById('chatTyping');
     chatSending = true;
@@ -1422,25 +1637,35 @@
     typing.style.display = 'block';
 
     try {
-      const res = await callGas('chatReply', {
-        lineId: currentUserId,
-        history: apiHistory,
-        message: text,
-        imageBlob: sendImage
-      });
+      const res = await callGas('chatReply', payload);
+
+      if (sendImage && payload.imageBlob) {
+        sharedMealContext = sharedMealContext || {};
+        sharedMealContext.blob = sendImage;
+        sharedMealContext.ingested = true;
+        chatSessionActive = true;
+      }
+      if (res.sessionActive) chatSessionActive = true;
 
       let reply;
       if (shouldUseClientChatReply_(res)) {
-        reply = buildOfflineChatReplyClient(text, !!sendImage);
+        reply = buildOfflineChatReplyClient(text, !!(sendImage || chatSessionActive));
       } else {
         reply = res.reply;
+        if (res.mode === 'offline' && res.offlineReason === 'urlfetch_quota') {
+          reply = '（今日は通信上限のため簡易回答）\n\n' + reply;
+        }
       }
       chatMessages.push({ role: 'assistant', text: reply });
       renderChatMessages();
+      updateChatSessionBar();
+      await refreshChatContext_();
+      renderChatMemories_();
+      await updateChatAiStatus_();
     } catch (e) {
       chatMessages.push({
         role: 'assistant',
-        text: buildOfflineChatReplyClient(text, !!sendImage)
+        text: buildOfflineChatReplyClient(text, !!(sendImage || chatSessionActive))
       });
       renderChatMessages();
     } finally {
