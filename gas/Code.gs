@@ -10,7 +10,7 @@
 
 const SHEET_ID = "1qBeXxm7RB92YuimEN4gfWeRo3IDalTI7ZfqwNC090bg";
 const DRIVE_FOLDER_ID = "1WySdeyLYUyyg27S335cOw22qFyeBV3Le";
-const GAS_VERSION = "20260524-9";
+const GAS_VERSION = "20260529-1";
 
 function getGeminiApiKey() {
   return PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
@@ -223,6 +223,107 @@ function analyzeMealPhoto(data) {
     advice: buildOfflineMealAdvice_(mealType),
     gasVersion: GAS_VERSION,
     mode: "offline"
+  };
+}
+
+// =========================================
+// インボディ（ヘルスメーター）写真 → 数値の読み取り
+// 体重タブで計測画面のスクショを送ると、各項目を自動で埋めるための値を返す
+// =========================================
+
+function buildInBodyParsePrompt_() {
+  return "この画像は家庭用の体組成計・ヘルスメーター（インボディ等）の計測結果画面、"
+    + "またはそのスマホアプリのスクリーンショットです。表示されている数値を読み取ってください。\n\n"
+    + "次のキーを持つJSONだけを返してください（説明文・マークダウンは禁止。JSONのみ）:\n"
+    + '{"weight_kg":null,"body_fat_pct":null,"muscle_mass_kg":null,"visceral_fat_level":null,"bmr_kcal":null,"bmi":null,"target_weight_kg":null,"target_body_fat_pct":null}\n\n'
+    + "各キーの意味:\n"
+    + "・weight_kg = 体重(kg)\n"
+    + "・body_fat_pct = 体脂肪率(%)\n"
+    + "・muscle_mass_kg = 筋肉量(kg)\n"
+    + "・visceral_fat_level = 内臓脂肪レベル\n"
+    + "・bmr_kcal = 基礎代謝(kcal)\n"
+    + "・bmi = BMI\n"
+    + "・target_weight_kg / target_body_fat_pct = 画面に目標値が表示されていれば。無ければ null\n\n"
+    + "ルール:\n"
+    + "・読み取れない項目は null。推測で埋めない。\n"
+    + "・数値のみ（単位や記号は付けない）。全角数字は半角にする。";
+}
+
+function extractJsonObject_(text) {
+  if (!text) return null;
+  var cleaned = String(text).replace(/```json/gi, "").replace(/```/g, "").trim();
+  var start = cleaned.indexOf("{");
+  var end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) return null;
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch (e) {
+    return null;
+  }
+}
+
+function toNumberOrNull_(v) {
+  if (v === null || v === undefined || v === "") return null;
+  var n = Number(String(v).replace(/[^0-9.\-]/g, ""));
+  return isNaN(n) ? null : n;
+}
+
+function parseInBodyPhoto(data) {
+  data = data || {};
+  var imageBlob = data.imageBlob;
+
+  if (!imageBlob) {
+    return {
+      status: "error",
+      message: "ヘルスメーターの写真を添付してください。",
+      gasVersion: GAS_VERSION
+    };
+  }
+
+  if (isChatAiBlocked_()) {
+    return {
+      status: "error",
+      message: "いまAIが使えません（" + getChatOfflineReason_() + "）。数値は手入力でお願いします。",
+      offline: true,
+      gasVersion: GAS_VERSION
+    };
+  }
+
+  var result = callGeminiVision_(buildInBodyParsePrompt_(), imageBlob);
+  if (!result.ok) {
+    if (result.quotaExceeded) markUrlFetchQuotaHit_();
+    console.error("parseInBodyPhoto エラー:", result.error);
+    return {
+      status: "error",
+      message: "写真から数値を読み取れませんでした。お手数ですが手入力でお願いします。",
+      error: result.error,
+      gasVersion: GAS_VERSION
+    };
+  }
+
+  var parsed = extractJsonObject_(result.text);
+  if (!parsed) {
+    return {
+      status: "error",
+      message: "写真から数値を読み取れませんでした。お手数ですが手入力でお願いします。",
+      raw: result.text,
+      gasVersion: GAS_VERSION
+    };
+  }
+
+  return {
+    status: "success",
+    values: {
+      weight: toNumberOrNull_(parsed.weight_kg),
+      bodyFat: toNumberOrNull_(parsed.body_fat_pct),
+      muscleMass: toNumberOrNull_(parsed.muscle_mass_kg),
+      visceralFat: toNumberOrNull_(parsed.visceral_fat_level),
+      bmr: toNumberOrNull_(parsed.bmr_kcal),
+      bmi: toNumberOrNull_(parsed.bmi),
+      targetWeight: toNumberOrNull_(parsed.target_weight_kg),
+      targetBodyFat: toNumberOrNull_(parsed.target_body_fat_pct)
+    },
+    gasVersion: GAS_VERSION
   };
 }
 
@@ -762,6 +863,9 @@ function doPost(e) {
       case "analyzeMealPhoto":
         result = analyzeMealPhoto(data || {});
         break;
+      case "parseInBodyPhoto":
+        result = parseInBodyPhoto(data || {});
+        break;
       case "ingestMealPhoto":
         result = ingestMealPhoto(data || {});
         break;
@@ -1192,10 +1296,10 @@ function seedDemoData() {
   today.setHours(0, 0, 0, 0);
 
   var weights = [
-    59.2, 59.0, 58.8, 58.9, 58.7,
-    58.6, 58.5, 58.4, 58.6, 58.3,
-    58.2, 58.1, 58.0, 58.2, 57.9,
-    58.1, 58.0, 58.3, 58.2, 58.1, 58.0
+    51.2, 51.0, 50.9, 51.0, 50.8,
+    50.7, 50.6, 50.5, 50.6, 50.4,
+    50.3, 50.3, 50.2, 50.3, 50.1,
+    50.2, 50.1, 50.2, 50.1, 50.0, 50.0
   ];
 
   var count = 0;

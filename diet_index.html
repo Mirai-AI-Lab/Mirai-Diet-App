@@ -65,6 +65,24 @@
     /* ===== 2カラムグリッド ===== */
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
+    /* ===== インボディ写真読み取り ===== */
+    .inbody-import {
+      background: linear-gradient(135deg, #e8f0fd, #e8f8ee);
+      border: 1px solid #c5d8ec;
+      border-radius: 12px;
+      padding: 12px 12px 4px;
+      margin-bottom: 14px;
+    }
+    .inbody-import > label { margin-top: 0; color: #1a6b9e; }
+    .inbody-hint { font-size: 11px; color: #777; margin: 0 0 8px; line-height: 1.5; }
+    .inbody-status {
+      font-size: 12px; line-height: 1.6; color: #555;
+      background: white; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px;
+    }
+    .inbody-status.loading { color: #1a6b9e; }
+    .inbody-status.ok { color: var(--dark-green); border-left: 3px solid var(--dark-green); }
+    .inbody-status.err { color: var(--red); border-left: 3px solid var(--red); }
+
     /* ===== 写真 ===== */
     .photo-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
     .btn-sub { background: #666; color: white; padding: 10px; border-radius: 8px; text-align: center; font-size: 12px; font-weight: bold; cursor: pointer; }
@@ -385,6 +403,21 @@
 
     <!-- 体重フォーム -->
     <div id="form-weight" class="form-section">
+
+      <!-- ヘルスメーターの写真から自動入力 -->
+      <div class="inbody-import">
+        <label>📷 ヘルスメーターの写真から自動入力</label>
+        <p class="inbody-hint">毎朝スマホで見ている計測画面を、そのまま撮影 or スクショで選ぶだけ。AIが数値を読み取って下の欄に入れます。中身を確認して「記録する」。</p>
+        <div class="photo-buttons">
+          <div class="btn-sub" onclick="document.getElementById('inbodyCamera').click()">📷 写真を撮る</div>
+          <div class="btn-sub" onclick="document.getElementById('inbodyGallery').click()">🖼️ スクショを選ぶ</div>
+        </div>
+        <input type="file" id="inbodyCamera"  accept="image/*" capture="environment" style="display:none" onchange="handleInBodyPhoto(this)">
+        <input type="file" id="inbodyGallery" accept="image/*"                        style="display:none" onchange="handleInBodyPhoto(this)">
+        <div id="inbodyPreview" class="preview-container"></div>
+        <div id="inbodyStatus" class="inbody-status" style="display:none;"></div>
+      </div>
+
       <div class="two-col">
         <div>
           <label>体重 (kg)</label>
@@ -597,7 +630,7 @@
 <script>
   const LIFF_ID = "2010164389-Gz0BXhsl";
   const GAS_URL = "https://script.google.com/macros/s/AKfycbw4sXoZtfgXfKgOXr7KsrvaOC9p3rALSWcLTW-SKoP0VsLdkDja4VHJZy2jKZL39cet/exec";
-  const DEFAULT_TARGET_WEIGHT = 55.0;
+  const DEFAULT_TARGET_WEIGHT = 48.0;
 
   let currentRecordType = "meal";
   let bowelStatus       = "あり";
@@ -616,6 +649,8 @@
   let chatSending       = false;
   let chatInitialized   = false;
   let mealIngesting     = false;
+  let inbodyImageBlob   = null;
+  let inbodyParsing     = false;
 
   // =========================================
   // 1. 起動時処理
@@ -730,6 +765,9 @@
       const pc = document.getElementById('previewContainer');
       if (pc) pc.innerHTML = "";
       updateMealHandoffUI();
+      inbodyImageBlob = null;
+      renderInBodyPreview();
+      setInBodyStatus('', '');
     }
   }
 
@@ -1222,6 +1260,97 @@
   }
 
   // =========================================
+  // 10-B. インボディ写真 → 数値の自動入力
+  // =========================================
+  function handleInBodyPhoto(input) {
+    const file = input.files && input.files[0];
+    input.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      inbodyImageBlob = e.target.result;
+      renderInBodyPreview();
+      parseInBodyPhoto();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function renderInBodyPreview() {
+    const container = document.getElementById('inbodyPreview');
+    if (!container) return;
+    container.innerHTML = "";
+    if (!inbodyImageBlob) return;
+    const div = document.createElement('div');
+    div.className = 'preview-wrapper';
+    div.innerHTML = `<img src="${inbodyImageBlob}" class="preview-img"><div class="del-btn" onclick="removeInBodyPhoto()">×</div>`;
+    container.appendChild(div);
+  }
+
+  function removeInBodyPhoto() {
+    inbodyImageBlob = null;
+    renderInBodyPreview();
+    setInBodyStatus('', '');
+  }
+
+  function setInBodyStatus(cls, text) {
+    const el = document.getElementById('inbodyStatus');
+    if (!el) return;
+    if (!text) {
+      el.style.display = 'none';
+      el.innerText = '';
+      return;
+    }
+    el.style.display = 'block';
+    el.className = 'inbody-status' + (cls ? ' ' + cls : '');
+    el.innerText = text;
+  }
+
+  function setNumIfPresent_(id, value) {
+    if (value === null || value === undefined || value === '') return false;
+    const el = document.getElementById(id);
+    if (!el) return false;
+    el.value = value;
+    return true;
+  }
+
+  async function parseInBodyPhoto() {
+    if (!inbodyImageBlob || inbodyParsing) return;
+    inbodyParsing = true;
+    setInBodyStatus('loading', '🤖 写真の数値を読み取っています…');
+
+    try {
+      const res = await callGas('parseInBodyPhoto', {
+        lineId: currentUserId,
+        imageBlob: inbodyImageBlob
+      });
+
+      if (res.status === 'success' && res.values) {
+        const v = res.values;
+        const filled = [];
+        if (setNumIfPresent_('weightVal',   v.weight))      filled.push('体重');
+        if (setNumIfPresent_('bodyFat',     v.bodyFat))     filled.push('体脂肪率');
+        if (setNumIfPresent_('muscleMass',  v.muscleMass))  filled.push('筋肉量');
+        if (setNumIfPresent_('visceralFat', v.visceralFat)) filled.push('内臓脂肪');
+        calcBMI();
+
+        if (filled.length) {
+          let msg = '✓ 読み取りました（' + filled.join('・') + '）。数値を確認して「記録する」を押してください。';
+          if (v.targetWeight != null) msg += '\n🎯 目標体重 ' + v.targetWeight + 'kg も写真にありました。';
+          setInBodyStatus('ok', msg);
+        } else {
+          setInBodyStatus('err', '写真から数値を読み取れませんでした。お手数ですが下の欄に手入力してください。');
+        }
+      } else {
+        setInBodyStatus('err', res.message || '読み取れませんでした。下の欄に手入力してください。');
+      }
+    } catch (e) {
+      setInBodyStatus('err', '通信エラーで読み取れませんでした。下の欄に手入力してください。');
+    } finally {
+      inbodyParsing = false;
+    }
+  }
+
+  // =========================================
   // 11. データ送信
   // =========================================
   async function sendData() {
@@ -1255,6 +1384,7 @@
         muscleMass:  parseFloat(document.getElementById('muscleMass').value)  || null,
         visceralFat: parseFloat(document.getElementById('visceralFat').value) || null
       };
+      if (inbodyImageBlob) payload.imageBlobs = [inbodyImageBlob];
 
     } else if (currentRecordType === 'exercise') {
       const dur = document.getElementById('exerciseDuration').value;

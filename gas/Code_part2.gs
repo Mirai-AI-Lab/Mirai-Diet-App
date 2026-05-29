@@ -27,6 +27,9 @@ function doPost(e) {
       case "analyzeMealPhoto":
         result = analyzeMealPhoto(data || {});
         break;
+      case "parseInBodyPhoto":
+        result = parseInBodyPhoto(data || {});
+        break;
       case "ingestMealPhoto":
         result = ingestMealPhoto(data || {});
         break;
@@ -457,10 +460,10 @@ function seedDemoData() {
   today.setHours(0, 0, 0, 0);
 
   var weights = [
-    59.2, 59.0, 58.8, 58.9, 58.7,
-    58.6, 58.5, 58.4, 58.6, 58.3,
-    58.2, 58.1, 58.0, 58.2, 57.9,
-    58.1, 58.0, 58.3, 58.2, 58.1, 58.0
+    51.2, 51.0, 50.9, 51.0, 50.8,
+    50.7, 50.6, 50.5, 50.6, 50.4,
+    50.3, 50.3, 50.2, 50.3, 50.1,
+    50.2, 50.1, 50.2, 50.1, 50.0, 50.0
   ];
 
   var count = 0;
