@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Myダイエット記録 - プレビュー</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-orange-50">
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState } = React;
+    
+    // アイコン代わり（絵文字）
+    const Sun = () => '☀️';
+    const Moon = () => '🌙';
+    const Utensils = () => '🍽️';
+    const Coffee = () => '☕';
+    const Camera = () => '📷';
+    const Scale = () => '⚖️';
+    const Dumbbell = () => '💪';
+    const Bot = () => '🤖';
+    const PlusCircle = () => '➕';
+    const Trash2 = () => '🗑️';
+    const Activity = () => '📊';
+    const TrendingDown = () => '📉';
+    const CheckCircle2 = () => '✅';
+    const Sparkles = () => '✨';
+    const MessageCircle = () => '💬';
+
+    function App() {
+      const [activeTab, setActiveTab] = useState('meal');
+      const [mealRecords, setMealRecords] = useState([]);
+      const [bodyRecords, setBodyRecords] = useState([
+        { id: 1, weight: 68.75, bodyFat: 41, muscle: 38.2, date: '3/8 8:42' }
+      ]);
+      const [workoutRecords, setWorkoutRecords] = useState([]);
+      
+      const [imagePreview, setImagePreview] = useState(null);
+      const [timing, setTiming] = useState('朝食');
+      const [memo, setMemo] = useState('');
+      const [inputWeight, setInputWeight] = useState('');
+      const [inputBodyFat, setInputBodyFat] = useState('');
+      const [inputMuscle, setInputMuscle] = useState('');
+
+      const targetWeight = 58;
+      const latestWeight = bodyRecords[0]?.weight;
+      const remainingWeight = latestWeight ? (latestWeight - targetWeight).toFixed(1) : null;
+      const workoutsThisMonth = workoutRecords.length;
+
+      const getTimingIcon = (t) => {
+        if (t === '朝食') return '☀️';
+        if (t === '昼食') return '🍽️';
+        if (t === '夕食') return '🌙';
+        if (t === '間食') return '☕';
+        return '🍽️';
+      };
+
+      const handleImageChange = (e) => {
+        const file = e.target.files?.[0];
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = () => setImagePreview(reader.result);
+          reader.readAsDataURL(file);
+        }
+      };
+
+      const handleAddMeal = () => {
+        if (!imagePreview && !memo) { alert('写真かメモを入力してください'); return; }
+        setMealRecords([{ id: Date.now(), image: imagePreview, timing, memo, date: new Date().toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }, ...mealRecords]);
+        setImagePreview(null); setMemo(''); setTiming('朝食');
+      };
+
+      const handleAddBody = () => {
+        if (!inputWeight) { alert('体重を入力してください'); return; }
+        const rec = { id: Date.now(), weight: parseFloat(inputWeight), bodyFat: inputBodyFat ? parseFloat(inputBodyFat) : null, muscle: inputMuscle ? parseFloat(inputMuscle) : null, date: new Date().toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) };
+        setBodyRecords([rec, ...bodyRecords]);
+        setInputWeight(''); setInputBodyFat(''); setInputMuscle('');
+      };
+
+      const handleAddWorkout = () => {
+        setWorkoutRecords([{ id: Date.now(), activity: 'カーブス', date: new Date().toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }, ...workoutRecords]);
+      };
+
+      const handleDelete = (id, type) => {
+        if (type === 'meal') setMealRecords(mealRecords.filter(r => r.id !== id));
+        else if (type === 'body') setBodyRecords(bodyRecords.filter(r => r.id !== id));
+        else if (type === 'workout') setWorkoutRecords(workoutRecords.filter(r => r.id !== id));
+      };
+
+      return (
+        <div className="min-h-screen bg-orange-50 text-gray-800 pb-24 font-sans">
+          {/* バナー */}
+          <div className="bg-amber-100 border-b border-amber-300 p-3 text-sm text-amber-800 text-center">
+            📱 プレビュー画面です（操作はできますが保存されません）
+          </div>
+
+          {/* ヘッダー */}
+          <header className="bg-orange-500 text-white p-4 shadow-md sticky top-0 z-10">
+            <div className="max-w-md mx-auto">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-xl font-bold">📊 Myダイエット記録</span>
+                <span className="bg-orange-600 px-3 py-1 rounded-full text-sm font-bold">💪 今月: {workoutsThisMonth}回</span>
+              </div>
+              <div className="bg-white/20 p-3 rounded-xl">
+                <div className="flex justify-between">
+                  <span>現在: {latestWeight ? latestWeight + 'kg' : '-'}</span>
+                  <span>目標: {targetWeight}kg</span>
+                </div>
+                {remainingWeight && <p className="text-sm font-bold mt-1">📉 あと {remainingWeight} kg！</p>}
+              </div>
+            </div>
+          </header>
+
+          {/* タブ */}
+          <div className="max-w-md mx-auto px-4 pt-4">
+            <div className="flex bg-white rounded-xl shadow p-1 gap-1">
+              {[
+                { id: 'meal', label: '食事', icon: '📷' },
+                { id: 'body', label: '体組成', icon: '⚖️' },
+                { id: 'workout', label: '運動', icon: '💪' },
+                { id: 'coach', label: 'コーチ', icon: '🤖' }
+              ].map(t => (
+                <button key={t.id} onClick={() => setActiveTab(t.id)}
+                  className={`flex-1 py-2 rounded-lg text-sm font-bold ${activeTab === t.id ? 'bg-orange-100 text-orange-700' : 'text-gray-400'}`}>
+                  {t.icon} {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <main className="max-w-md mx-auto px-4 py-6 space-y-4">
+            {/* 食事タブ */}
+            {activeTab === 'meal' && (
+              <>
+                <div className="bg-white rounded-2xl p-5 shadow border border-orange-100">
+                  <div className="border-2 border-dashed border-orange-200 rounded-xl bg-orange-50 p-8 text-center cursor-pointer" onClick={() => document.getElementById('fileInput').click()}>
+                    {imagePreview ? <img src={imagePreview} alt="食事" className="w-full max-h-48 object-cover rounded-lg" /> : <><span className="text-4xl">📷</span><p className="text-orange-500 mt-2">写真をタップ</p></>}
+                  </div>
+                  <input type="file" id="fileInput" accept="image/*" className="hidden" onChange={handleImageChange} />
+                  <div className="flex gap-2 mt-3">
+                    {['朝食','昼食','夕食','間食'].map(t => (
+                      <button key={t} onClick={() => setTiming(t)} className={`flex-1 py-2 rounded-lg text-sm font-bold ${timing === t ? 'bg-orange-500 text-white' : 'bg-gray-100 text-gray-500'}`}>{t}</button>
+                    ))}
+                  </div>
+                  <textarea placeholder="メモ（ご飯少なめ、など）" className="w-full mt-3 p-3 rounded-xl border border-gray-200 min-h-[80px]" value={memo} onChange={e => setMemo(e.target.value)} />
+                  <button onClick={handleAddMeal} className="w-full mt-3 bg-orange-500 text-white font-bold py-3 rounded-xl">➕ 保存する</button>
+                </div>
+                {mealRecords.map(r => (
+                  <div key={r.id} className="bg-white rounded-xl p-4 shadow border flex flex-col gap-2">
+                    <div className="flex justify-between"><span className="font-bold">{getTimingIcon(r.timing)} {r.timing}</span><span className="text-gray-400 text-sm">{r.date}</span><button onClick={() => handleDelete(r.id, 'meal')} className="text-gray-400">🗑️</button></div>
+                    {r.image && <img src={r.image} alt="" className="w-full h-32 object-cover rounded-lg" />}
+                    {r.memo && <p className="text-sm text-gray-600">{r.memo}</p>}
+                  </div>
+                ))}
+              </>
+            )}
+
+            {/* 体組成タブ */}
+            {activeTab === 'body' && (
+              <>
+                <div className="bg-white rounded-2xl p-5 shadow border border-orange-100">
+                  <label className="block text-sm font-bold text-gray-500 mb-1">体重 (kg) *</label>
+                  <input type="number" step="0.1" value={inputWeight} onChange={e => setInputWeight(e.target.value)} placeholder="例: 68.5" className="w-full p-3 rounded-xl border border-gray-200 mb-3" />
+                  <div className="flex gap-3">
+                    <div className="flex-1"><label className="block text-sm font-bold text-gray-500 mb-1">体脂肪 %</label><input type="number" step="0.1" value={inputBodyFat} onChange={e => setInputBodyFat(e.target.value)} placeholder="40.5" className="w-full p-3 rounded-xl border border-gray-200" /></div>
+                    <div className="flex-1"><label className="block text-sm font-bold text-gray-500 mb-1">筋肉 kg</label><input type="number" step="0.1" value={inputMuscle} onChange={e => setInputMuscle(e.target.value)} placeholder="38.2" className="w-full p-3 rounded-xl border border-gray-200" /></div>
+                  </div>
+                  <button onClick={handleAddBody} className="w-full mt-4 bg-orange-500 text-white font-bold py-3 rounded-xl">➕ 保存する</button>
+                </div>
+                {bodyRecords.map(r => (
+                  <div key={r.id} className="bg-white rounded-xl p-4 shadow border">
+                    <div className="flex justify-between mb-2"><span className="text-sm font-bold text-gray-500">{r.date}</span></div>
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div><p className="text-xs text-gray-400">体重</p><p className="text-xl font-bold">{r.weight} kg</p></div>
+                      <div><p className="text-xs text-gray-400">体脂肪</p><p className="text-lg font-bold">{r.bodyFat || '-'} %</p></div>
+                      <div><p className="text-xs text-gray-400">筋肉</p><p className="text-lg font-bold">{r.muscle || '-'} kg</p></div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {/* 運動タブ */}
+            {activeTab === 'workout' && (
+              <>
+                <div className="bg-white rounded-2xl p-8 shadow border border-orange-100 text-center">
+                  <div className="text-6xl mb-4">💪</div>
+                  <h2 className="text-xl font-bold mb-2">今日もカーブスで<br />頑張りましたか？</h2>
+                  <button onClick={handleAddWorkout} className="w-full mt-6 bg-orange-500 text-white font-bold py-4 rounded-xl text-lg">✅ カーブスに行った！</button>
+                </div>
+                {workoutRecords.map(r => (
+                  <div key={r.id} className="bg-white rounded-xl p-4 shadow border border-l-4 border-l-orange-500 flex justify-between items-center">
+                    <div><p className="font-bold">💪 {r.activity}</p><p className="text-sm text-gray-500">{r.date}</p></div>
+                    <button onClick={() => handleDelete(r.id, 'workout')} className="text-gray-400">🗑️</button>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {/* コーチタブ */}
+            {activeTab === 'coach' && (
+              <div className="bg-white rounded-2xl p-6 shadow border border-orange-100 text-center">
+                <div className="text-6xl mb-4">✨</div>
+                <h2 className="text-xl font-bold mb-2">AIパーソナルコーチ</h2>
+                <p className="text-gray-500 text-sm mb-6">本番環境では、あなたの記録を見てアドバイスします！</p>
+                <div className="bg-orange-50 p-4 rounded-xl text-left text-gray-600 text-sm">
+                  例：「頑張ってますね！今月は運動〇回、体重も〇kg減っています。タンパク質を意識した食事を続けて、筋肉を維持しながら脂肪を落としていきましょう 💪」
+                </div>
+              </div>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
